@@ -1,0 +1,2659 @@
+--[[ =====================================================================
+  MIG WORLD — INSTALADOR DO RPG (combate, slimes, progressão, quests,
+  loja, interface, sprint, admin)
+
+  COMO USAR
+  1) O mapa (gerador anterior) já deve existir em Workspace.MIG_WORLD.
+  2) Cole TUDO no Command Bar do Roblox Studio (modo Edit) e execute UMA vez.
+  3) Rodar de novo apenas reinstala os scripts/NPCs do RPG. O terreno e as
+     construções do mapa NÃO são tocados.
+
+  O QUE É CRIADO
+  - ReplicatedStorage/MigRPG        (Config + pasta Remotes)
+  - ServerScriptService/MigRPG_Server   (Script)
+  - StarterPlayer/StarterPlayerScripts/MigRPG_Client (LocalScript)
+  - Corpos + ProximityPrompt dentro dos modelos Workspace.MIG_WORLD.NPCs.NPC_*
+  Todos os scripts são escritos AGORA (modo Edit). Nada altera Source em jogo.
+===================================================================== ]]
+
+local RS = game:GetService("ReplicatedStorage")
+local SSS = game:GetService("ServerScriptService")
+local StarterPlayer = game:GetService("StarterPlayer")
+local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+
+local V3, CF, C3 = Vector3.new, CFrame.new, Color3.fromRGB
+
+local MIG = Workspace:FindFirstChild("MIG_WORLD")
+if not MIG then
+	error("[MIG RPG] Workspace.MIG_WORLD não encontrado. Rode primeiro o gerador do mapa.")
+end
+if not MIG:FindFirstChild("NPCs") or not MIG:FindFirstChild("Inimigos") then
+	error("[MIG RPG] Pastas NPCs/Inimigos não encontradas em MIG_WORLD. O mapa está incompleto.")
+end
+pcall(function() ChangeHistoryService:SetWaypoint("MIG RPG - antes de instalar") end)
+
+-- =====================================================================
+-- FONTES EMBUTIDAS
+-- =====================================================================
+local CONFIG_SRC = [=====[
+local Config = {}
+
+Config.MaxLevel = 100
+Config.WALK_SPEED = 16
+Config.SPRINT_SPEED = 27
+Config.SPRINT_DRAIN = 14          -- % por segundo correndo
+Config.SPRINT_REGEN = 22          -- % por segundo regenerando
+Config.SPRINT_STOP_DELAY = 1      -- espera ao parar de correr voluntariamente
+Config.SPRINT_EXHAUST_DELAY = 5   -- espera ao chegar em 0%
+Config.SHOP_REQUIRES_NPC = false  -- true: só compra/equipa perto de um ferreiro
+Config.SHOP_NPC_RANGE = 45
+Config.MaxActiveQuests = 4
+Config.RestCost = 10
+
+function Config.XpNeeded(level) return math.floor(50 * level ^ 1.6) end
+function Config.MaxHealth(level) return 100 + (level - 1) * 12 end
+function Config.DamageScale(level) return 1 + 0.04 * (level - 1) end
+
+Config.Rarities = {
+	Comum = {label = "Comum", color = Color3.fromRGB(190, 195, 210), order = 1},
+	Incomum = {label = "Incomum", color = Color3.fromRGB(90, 225, 130), order = 2},
+	Raro = {label = "Raro", color = Color3.fromRGB(80, 165, 255), order = 3},
+	Epico = {label = "Épico", color = Color3.fromRGB(190, 105, 255), order = 4},
+	Lendario = {label = "Lendário", color = Color3.fromRGB(255, 195, 60), order = 5},
+	Mitico = {label = "Mítico", color = Color3.fromRGB(255, 85, 125), order = 6},
+}
+
+local function C(r, g, b) return Color3.fromRGB(r, g, b) end
+
+Config.Swords = {
+	{id = "wood", name = "Espada de Madeira", rarity = "Comum", price = 0, shop = false, damage = 18, cooldown = 0.6, range = 9, crit = 0.03,
+		len = 3.2, hilt = C(110, 78, 50), blade = C(176, 138, 92),
+		skill = {name = "Giro Rústico", kind = "spin", cd = 8, mult = 1.6, radius = 10, color = C(220, 190, 130),
+			desc = "Gira rapidamente e atinge todos os slimes ao redor."}},
+	{id = "iron", name = "Espada de Ferro", rarity = "Comum", price = 150, shop = true, damage = 28, cooldown = 0.55, range = 9.5, crit = 0.05,
+		len = 3.6, hilt = C(80, 60, 44), blade = C(200, 205, 215),
+		skill = {name = "Investida de Ferro", kind = "dash", cd = 9, mult = 1.8, dist = 24, width = 7, color = C(210, 215, 230),
+			desc = "Avança em linha reta e corta tudo pelo caminho."}},
+	{id = "emerald", name = "Lâmina Esmeralda", rarity = "Incomum", price = 600, shop = true, damage = 42, cooldown = 0.5, range = 10, crit = 0.08,
+		len = 3.8, hilt = C(40, 80, 50), blade = C(110, 220, 150), glow = C(90, 255, 150),
+		skill = {name = "Onda Esmeralda", kind = "wave", cd = 10, mult = 2.0, length = 34, width = 9, color = C(90, 255, 150),
+			dot = {mult = 0.35, dur = 4},
+			desc = "Lança uma onda venenosa que causa dano e envenena os inimigos."}},
+	{id = "steel", name = "Aço Relâmpago", rarity = "Incomum", price = 1200, shop = true, damage = 60, cooldown = 0.48, range = 10, crit = 0.10,
+		len = 4, hilt = C(50, 60, 90), blade = C(150, 190, 255), glow = C(120, 200, 255),
+		skill = {name = "Corte Relâmpago", kind = "chain", cd = 10, mult = 1.6, targets = 4, range = 26, color = C(130, 210, 255),
+			desc = "Um raio salta entre até 4 slimes próximos."}},
+	{id = "flame", name = "Espada de Chamas", rarity = "Raro", price = 3000, shop = true, damage = 90, cooldown = 0.5, range = 10.5, crit = 0.10,
+		len = 4.2, hilt = C(70, 36, 30), blade = C(255, 140, 70), glow = C(255, 110, 40),
+		skill = {name = "Explosão Flamejante", kind = "blast", cd = 12, mult = 2.6, forward = 12, radius = 14, color = C(255, 120, 50),
+			dot = {mult = 0.4, dur = 4},
+			desc = "Detona uma explosão à frente e deixa os alvos queimando."}},
+	{id = "frost", name = "Lâmina de Gelo", rarity = "Raro", price = 3800, shop = true, damage = 105, cooldown = 0.5, range = 10.5, crit = 0.10,
+		len = 4.2, hilt = C(50, 80, 120), blade = C(180, 235, 255), glow = C(140, 225, 255),
+		skill = {name = "Pulso Congelante", kind = "freeze", cd = 14, mult = 2.0, radius = 17, slow = 0.6, dur = 4, color = C(150, 230, 255),
+			desc = "Onda de gelo que causa dano e reduz a velocidade dos slimes."}},
+	{id = "arcane", name = "Lâmina Arcana", rarity = "Epico", price = 9000, shop = true, damage = 150, cooldown = 0.45, range = 11, crit = 0.12,
+		len = 4.4, hilt = C(60, 36, 100), blade = C(200, 150, 255), glow = C(190, 120, 255),
+		skill = {name = "Chuva Arcana", kind = "rain", cd = 16, mult = 1.7, count = 6, radius = 32, color = C(190, 120, 255),
+			desc = "Meteoros arcanos caem sobre os slimes ao redor."}},
+	{id = "shadow", name = "Espada Sombria", rarity = "Epico", price = 12000, shop = true, damage = 175, cooldown = 0.45, range = 11, crit = 0.14,
+		len = 4.4, hilt = C(30, 26, 40), blade = C(70, 50, 100), glow = C(170, 80, 255),
+		skill = {name = "Devorar Almas", kind = "drain", cd = 15, mult = 2.2, radius = 13, heal = 0.5, color = C(160, 70, 240),
+			desc = "Drena os inimigos e cura você com metade do dano causado."}},
+	{id = "excalibur", name = "Excalibur de MIG", rarity = "Lendario", price = 30000, shop = true, damage = 260, cooldown = 0.42, range = 12, crit = 0.15,
+		len = 4.8, hilt = C(212, 172, 60), blade = C(255, 245, 200), glow = C(255, 220, 110),
+		skill = {name = "Julgamento Celestial", kind = "beam", cd = 22, mult = 4.2, forward = 16, radius = 22, color = C(255, 225, 120),
+			desc = "Um feixe divino desce do céu e esmaga tudo na área."}},
+	{id = "king", name = "Lâmina do Rei Slime", rarity = "Mitico", price = 0, shop = false, damage = 340, cooldown = 0.4, range = 12.5, crit = 0.18,
+		len = 5, hilt = C(60, 150, 90), blade = C(120, 255, 170), glow = C(80, 255, 140),
+		skill = {name = "Colapso Gelatinoso", kind = "pull", cd = 25, mult = 5.0, radius = 26, color = C(100, 255, 160),
+			desc = "Puxa todos os slimes para perto e causa um colapso devastador. Dropa do Rei Slime."}},
+}
+Config.SwordsById = {}
+for i, s in ipairs(Config.Swords) do
+	s.order = i
+	Config.SwordsById[s.id] = s
+end
+
+Config.SlimeKinds = {
+	SlimeBase = {name = "Slime da Praia", color = C(255, 220, 120), size = 3, hpMul = 0.8, dmgMul = 0.7, xpMul = 0.8, coinMul = 0.8, speed = 20, jump = 28, aggro = 18, leash = 70, atkCd = 1.6},
+	Slime = {name = "Slime", color = C(110, 230, 120), size = 3.6, hpMul = 1, dmgMul = 1, xpMul = 1, coinMul = 1, speed = 21, jump = 30, aggro = 22, leash = 80, atkCd = 1.5},
+	SlimeElite = {name = "Slime Elite", color = C(255, 120, 60), size = 6, hpMul = 3, dmgMul = 1.5, xpMul = 3, coinMul = 3, speed = 20, jump = 32, aggro = 28, leash = 90, atkCd = 1.4},
+	SlimeFloresta = {name = "Slime da Floresta", color = C(80, 190, 90), size = 3.8, hpMul = 1, dmgMul = 1, xpMul = 1, coinMul = 1, speed = 21, jump = 30, aggro = 22, leash = 80, atkCd = 1.5},
+	SlimeAgua = {name = "Slime Aquático", color = C(90, 180, 255), size = 3.8, hpMul = 1.1, dmgMul = 1, xpMul = 1.1, coinMul = 1.1, speed = 21, jump = 30, aggro = 22, leash = 80, atkCd = 1.5},
+	SlimeAntigo = {name = "Slime Antigo", color = C(255, 205, 120), size = 4.2, hpMul = 1.3, dmgMul = 1.2, xpMul = 1.3, coinMul = 1.3, speed = 22, jump = 30, aggro = 24, leash = 80, atkCd = 1.4},
+	SlimeCristal = {name = "Slime de Cristal", color = C(130, 230, 255), size = 4.2, hpMul = 1.5, dmgMul = 1.3, xpMul = 1.5, coinMul = 1.5, speed = 22, jump = 30, aggro = 24, leash = 90, atkCd = 1.4},
+	SlimeGelo = {name = "Slime de Gelo", color = C(190, 230, 255), size = 4.4, hpMul = 1.6, dmgMul = 1.3, xpMul = 1.6, coinMul = 1.6, speed = 20, jump = 30, aggro = 24, leash = 90, atkCd = 1.4},
+	SlimeVeneno = {name = "Slime Venenoso", color = C(150, 255, 90), size = 4.4, hpMul = 1.5, dmgMul = 1.2, xpMul = 1.6, coinMul = 1.6, speed = 22, jump = 30, aggro = 24, leash = 90, atkCd = 1.4, poison = true},
+	SlimeSombrio = {name = "Slime Sombrio", color = C(170, 90, 255), size = 5, hpMul = 2, dmgMul = 1.6, xpMul = 2, coinMul = 2, speed = 23, jump = 32, aggro = 28, leash = 100, atkCd = 1.3},
+	SlimeChefe = {name = "Slime Chefe", color = C(255, 90, 140), size = 9, hpMul = 10, dmgMul = 2.2, xpMul = 12, coinMul = 12, speed = 18, jump = 34, aggro = 40, leash = 130, atkCd = 1.6, boss = true},
+	Chefe = {name = "Golem de Cristal", color = C(110, 220, 255), size = 10, hpMul = 14, dmgMul = 2.6, xpMul = 16, coinMul = 16, speed = 17, jump = 34, aggro = 40, leash = 130, atkCd = 1.7, boss = true},
+	ReiSlime = {name = "Rei Slime", color = C(255, 70, 130), size = 15, hpMul = 22, dmgMul = 3, xpMul = 30, coinMul = 30, speed = 16, jump = 36, aggro = 55, leash = 150, atkCd = 1.8, boss = true},
+}
+
+Config.NamedBosses = {
+	BossSpawn_ReiSlime = "Rei Slime",
+	ChefeFloresta_SlimeAncestral = "Slime Ancestral",
+	ChefeMontanha_SlimeGelo = "Slime Glacial",
+	ChefeCaverna_GolemDeCristal = "Golem de Cristal",
+}
+
+Config.Quests = {
+	{id = "Q_INICIO", name = "Primeiros Passos", npc = "Mestre da Guilda", desc = "Derrote 5 slimes verdes nas Planícies dos Slimes.", kinds = {"Slime", "SlimeBase"}, count = 5, coins = 120, xp = 70},
+	{id = "Q_CACA", name = "Caça aos Slimes", npc = "Mestre da Guilda", desc = "Derrote 15 slimes de qualquer tipo. Pode ser repetida.", count = 15, coins = 300, xp = 150, repeatable = true},
+	{id = "Q_FLORESTA", name = "Floresta Sussurrante", npc = "Explorador Veterano", desc = "Derrote 10 slimes da Floresta.", kinds = {"SlimeFloresta"}, count = 10, coins = 450, xp = 240},
+	{id = "Q_LAGO", name = "Pesca Perigosa", npc = "Pescador", desc = "Derrote 8 slimes aquáticos perto do lago.", kinds = {"SlimeAgua"}, count = 8, coins = 600, xp = 320},
+	{id = "Q_RUINAS", name = "Ecos Antigos", npc = "Bibliotecario", desc = "Derrote 8 slimes antigos nas Ruínas Esquecidas.", kinds = {"SlimeAntigo"}, count = 8, coins = 900, xp = 480},
+	{id = "Q_CAVERNA", name = "Cristais Brilhantes", npc = "Mineiro", desc = "Derrote 8 slimes de cristal na Caverna Cristalina.", kinds = {"SlimeCristal"}, count = 8, coins = 1400, xp = 700},
+	{id = "Q_PANTANO", name = "Veneno no Pântano", npc = "Bruxa do Pantano", desc = "Derrote 10 slimes venenosos no Pântano Sombrio.", kinds = {"SlimeVeneno"}, count = 10, coins = 2000, xp = 950},
+	{id = "Q_GELO", name = "Gelo Eterno", npc = "Guarda do Portao Norte", desc = "Derrote 10 slimes de gelo nas montanhas.", kinds = {"SlimeGelo"}, count = 10, coins = 2600, xp = 1200},
+	{id = "Q_SOMBRIO", name = "Sombras Crescem", npc = "Cacador de Sombras", desc = "Derrote 12 slimes sombrios nas Terras Cinzentas.", kinds = {"SlimeSombrio"}, count = 12, coins = 4000, xp = 2000},
+	{id = "Q_REI", name = "A Queda do Rei Slime", npc = "Mestre da Guilda", desc = "Derrote o Rei Slime no Trono das Terras Cinzentas.", kinds = {"ReiSlime"}, count = 1, coins = 20000, xp = 8000},
+}
+Config.QuestsById = {}
+for _, q in ipairs(Config.Quests) do Config.QuestsById[q.id] = q end
+
+Config.NPCs = {
+	["Guia da Ilha"] = {text = "Bem-vindo a MIG WORLD! Siga a estrada ao norte até a Vila de Mig.", tip = "Clique (ou toque em ATACAR) para golpear. Use Q (ou o botão de habilidade) para o ataque especial da sua espada."},
+	["Marinheiro"] = {text = "O pier ainda está em obras. Em breve haverá viagens para outras ilhas!", tip = "Viagens de barco ainda não foram implementadas."},
+	["Mestre da Guilda"] = {text = "Aventureiro! A Guilda precisa de gente corajosa contra os slimes.", quests = {"Q_INICIO", "Q_CACA", "Q_REI"}, tip = "Missões dão moedas e XP extras além do que os slimes já dão."},
+	["Ferreiro de Espadas"] = {text = "Minhas lâminas são forjadas com carinho. Quer dar uma olhada?", shop = true, tip = "Espadas mais raras têm habilidades especiais mais poderosas."},
+	["Ferreiro"] = {text = "A forja nunca para! Precisa de uma lâmina melhor?", shop = true, tip = "Matar o Rei Slime pode render uma espada Mítica."},
+	["Alquimista"] = {text = "Poções... em breve! Ainda estou colhendo ingredientes.", tip = "Poções ainda não foram implementadas."},
+	["Taverneiro"] = {text = "Sente-se! Um bom descanso cura qualquer ferida.", rest = true, tip = "Descansar aqui restaura toda a sua vida por poucas moedas."},
+	["Sacerdotisa"] = {text = "As habilidades das espadas despertam o poder oculto de quem as empunha.", tip = "Cada espada tem uma habilidade exclusiva. Veja os detalhes no Inventário."},
+	["Bibliotecario"] = {text = "Os livros falam de ruínas ao noroeste, onde slimes antigos despertaram...", quests = {"Q_RUINAS"}, tip = "Há locais secretos espalhados pelo mapa. Explore!"},
+	["Cavaleiro"] = {text = "Montarias estarão disponíveis em uma futura atualização.", tip = "Montarias ainda não foram implementadas."},
+	["Guia da Vila"] = {text = "Esta é a Vila de Mig. A Guilda, a Taverna, a Forja e o Templo ficam ao redor da fonte.", tip = "Os botões no topo abrem Loja, Quests, Inventário e Status."},
+	["Mercador"] = {text = "Compro e vendo de tudo... em breve. Por ora, os ferreiros vendem as espadas.", tip = "Slimes derrotados dão moedas."},
+	["Guarda do Portao Sul"] = {text = "Os portões estão seguros. Cuidado com os slimes além das muralhas.", tip = "As Planícies dos Slimes ficam a leste."},
+	["Guarda do Portao Norte"] = {text = "Ao norte ficam as montanhas geladas. Slimes de gelo descem de lá.", quests = {"Q_GELO"}, tip = "Leve uma espada forte para as montanhas."},
+	["Treinador de Combate"] = {text = "Quer treinar? Ataque com clique/toque e use habilidades com Q.", tip = "A recarga da habilidade aparece no botão de habilidade."},
+	["Explorador Veterano"] = {text = "A floresta é bonita, mas está infestada de slimes.", quests = {"Q_FLORESTA"}, tip = "Dizem que há uma clareira secreta com fadas no oeste."},
+	["Cozinheira do Acampamento"] = {text = "Comida quentinha só quando eu terminar de cozinhar!", tip = "Comidas com bônus ainda não foram implementadas."},
+	["Mineiro"] = {text = "A caverna ao norte brilha com cristais, mas os slimes de lá são perigosos.", quests = {"Q_CAVERNA"}, tip = "Há uma câmara secreta no fundo da caverna."},
+	["Pescador"] = {text = "Pescaria seria tranquila se não fossem os slimes na margem...", quests = {"Q_LAGO"}, tip = "Existe uma caverna escondida atrás da cachoeira."},
+	["Bruxa do Pantano"] = {text = "Hehe... Preciso de ingredientes raros dos slimes venenosos.", quests = {"Q_PANTANO"}, tip = "Cuidado: o veneno continua te ferindo por alguns segundos."},
+	["Cacador de Sombras"] = {text = "As Terras Cinzentas escondem o Rei Slime. Poucos voltam de lá.", quests = {"Q_SOMBRIO"}, tip = "O Rei Slime dropa a Lâmina do Rei Slime."},
+}
+
+return Config
+]=====]
+
+-- ---------------------------------------------------------------------
+local SERVER_SRC = [=====[
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local DataStoreService = game:GetService("DataStoreService")
+local CollectionService = game:GetService("CollectionService")
+
+local ADMIN_NAME = "Carlosconta6"
+
+local MigRPG = RS:WaitForChild("MigRPG")
+local Config = require(MigRPG:WaitForChild("Config"))
+local Remotes = MigRPG:WaitForChild("Remotes")
+local rState = Remotes:WaitForChild("State")
+local rNotify = Remotes:WaitForChild("Notify")
+local rDialogue = Remotes:WaitForChild("Dialogue")
+local rChoice = Remotes:WaitForChild("DialogChoice")
+local rOpenShop = Remotes:WaitForChild("OpenShop")
+local rAttack = Remotes:WaitForChild("Attack")
+local rSkill = Remotes:WaitForChild("Skill")
+local rEquip = Remotes:WaitForChild("Equip")
+local rBuy = Remotes:WaitForChild("Buy")
+local rSprint = Remotes:WaitForChild("Sprint")
+local rStamina = Remotes:WaitForChild("Stamina")
+local rFX = Remotes:WaitForChild("FX")
+local rAdmin = Remotes:WaitForChild("AdminCmd")
+local rAbandon = Remotes:WaitForChild("QuestAbandon")
+
+local MIG = Workspace:WaitForChild("MIG_WORLD", 30)
+if not MIG then
+	warn("[MigRPG] Workspace.MIG_WORLD não encontrado.")
+	return
+end
+
+local old = MIG:FindFirstChild("SlimesAtivos")
+if old then old:Destroy() end
+local slimeFolder = Instance.new("Folder")
+slimeFolder.Name = "SlimesAtivos"
+slimeFolder.Parent = MIG
+
+local rng = Random.new()
+
+-- ============================ UTILIDADES ============================
+local function stn() return Workspace:GetServerTimeNow() end
+local function notify(p, text, kind) rNotify:FireClient(p, text, kind or "info") end
+
+local calls = setmetatable({}, {__mode = "k"})
+local function throttle(p, key, interval)
+	local t = calls[p]
+	if not t then t = {} calls[p] = t end
+	local n = os.clock()
+	if t[key] and n - t[key] < interval then return false end
+	t[key] = n
+	return true
+end
+
+local function aliveParts(p)
+	local char = p.Character
+	if not char then return nil end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if hum and hrp and hum.Health > 0 then return char, hum, hrp end
+	return nil
+end
+
+-- ============================== ADMIN ===============================
+local ADMIN_ID = nil
+local sessions = {}
+local pushState
+task.spawn(function()
+	local ok, id = pcall(function() return Players:GetUserIdFromNameAsync(ADMIN_NAME) end)
+	if ok and type(id) == "number" then
+		ADMIN_ID = id
+		for p in pairs(sessions) do if pushState then pushState(p) end end
+	end
+end)
+local function isAdmin(p)
+	if ADMIN_ID then return p.UserId == ADMIN_ID end
+	return p.Name == ADMIN_NAME
+end
+
+-- ============================== DADOS ===============================
+local store = nil
+do
+	local ok, res = pcall(function() return DataStoreService:GetDataStore("MigWorld_RPG_v1") end)
+	if ok then store = res else warn("[MigRPG] DataStore indisponível: " .. tostring(res)) end
+end
+
+local function defaultData()
+	return {v = 1, coins = 0, level = 1, xp = 0, inventory = {"wood"}, equipped = "wood", kills = 0, dmg = 0,
+		quests = {active = {}, done = {}}}
+end
+
+local function sanitize(raw)
+	local d = defaultData()
+	if type(raw) ~= "table" then return d end
+	if type(raw.coins) == "number" then d.coins = math.clamp(math.floor(raw.coins), 0, 2e9) end
+	if type(raw.level) == "number" then d.level = math.clamp(math.floor(raw.level), 1, Config.MaxLevel) end
+	if type(raw.xp) == "number" then d.xp = math.max(0, math.floor(raw.xp)) end
+	if type(raw.kills) == "number" then d.kills = math.max(0, math.floor(raw.kills)) end
+	if type(raw.dmg) == "number" then d.dmg = math.max(0, math.floor(raw.dmg)) end
+	if type(raw.inventory) == "table" then
+		local seen = {wood = true}
+		for _, id in ipairs(raw.inventory) do
+			if type(id) == "string" and Config.SwordsById[id] and not seen[id] then
+				seen[id] = true
+				table.insert(d.inventory, id)
+			end
+		end
+	end
+	if type(raw.equipped) == "string" and table.find(d.inventory, raw.equipped) then d.equipped = raw.equipped end
+	if type(raw.quests) == "table" then
+		if type(raw.quests.active) == "table" then
+			for id, prog in pairs(raw.quests.active) do
+				local q = Config.QuestsById[id]
+				if q and type(prog) == "number" then d.quests.active[id] = math.clamp(math.floor(prog), 0, q.count) end
+			end
+		end
+		if type(raw.quests.done) == "table" then
+			for id, v in pairs(raw.quests.done) do
+				if Config.QuestsById[id] and v then d.quests.done[id] = true end
+			end
+		end
+	end
+	if d.level >= Config.MaxLevel then d.xp = 0 else d.xp = math.min(d.xp, Config.XpNeeded(d.level) - 1) end
+	return d
+end
+
+local function snapshot(d)
+	local act, done = {}, {}
+	for k, v in pairs(d.quests.active) do act[k] = v end
+	for k in pairs(d.quests.done) do done[k] = true end
+	return {v = 1, coins = d.coins, level = d.level, xp = d.xp, inventory = table.clone(d.inventory), equipped = d.equipped,
+		kills = d.kills, dmg = d.dmg, quests = {active = act, done = done}}
+end
+
+local function dataKey(p) return "Player_" .. p.UserId end
+
+local function loadData(p)
+	if not store then return false, nil end
+	for i = 1, 3 do
+		local ok, res = pcall(function() return store:GetAsync(dataKey(p)) end)
+		if ok then return true, res end
+		warn("[MigRPG] GetAsync falhou (" .. i .. "): " .. tostring(res))
+		task.wait(1.5 * i)
+	end
+	return false, nil
+end
+
+local function saveData(p)
+	local s = sessions[p]
+	if not s or not s.canSave or not store then return false end
+	local waited = 0
+	while s.saving and waited < 10 do task.wait(0.2) waited += 0.2 end
+	s.saving = true
+	local snap = snapshot(s.data)
+	local ok, err = false, nil
+	for _ = 1, 3 do
+		ok, err = pcall(function() store:UpdateAsync(dataKey(p), function() return snap end) end)
+		if ok then break end
+		task.wait(1.5)
+	end
+	s.saving = false
+	if not ok then warn("[MigRPG] Falha ao salvar " .. p.Name .. ": " .. tostring(err)) end
+	return ok
+end
+
+-- ============================== ESTADO ==============================
+pushState = function(p)
+	local s = sessions[p]
+	if not s or not s.ready then return end
+	local d = s.data
+	local act, done = {}, {}
+	for k, v in pairs(d.quests.active) do act[k] = v end
+	for k in pairs(d.quests.done) do done[k] = true end
+	rState:FireClient(p, {
+		coins = d.coins, level = d.level, xp = d.xp,
+		need = (d.level >= Config.MaxLevel) and 0 or Config.XpNeeded(d.level),
+		inv = table.clone(d.inventory), equipped = d.equipped, kills = d.kills, dmg = d.dmg,
+		active = act, done = done, admin = isAdmin(p), skillReady = s.skillCd[d.equipped] or 0,
+		canSave = s.canSave, speedMult = s.speedMult,
+	})
+end
+
+local function applyMaxHealth(p, heal)
+	local s = sessions[p]
+	local char = p.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (s and hum) then return end
+	local mh = Config.MaxHealth(s.data.level)
+	local frac = hum.Health / math.max(1, hum.MaxHealth)
+	hum.MaxHealth = mh
+	hum.Health = heal and mh or math.clamp(frac * mh, 1, mh)
+end
+
+local function addXp(p, amount)
+	local s = sessions[p]
+	if not s then return end
+	local d = s.data
+	if d.level >= Config.MaxLevel then return end
+	d.xp += amount
+	local leveled = false
+	while d.level < Config.MaxLevel and d.xp >= Config.XpNeeded(d.level) do
+		d.xp -= Config.XpNeeded(d.level)
+		d.level += 1
+		leveled = true
+	end
+	if d.level >= Config.MaxLevel then d.xp = 0 end
+	if leveled then
+		applyMaxHealth(p, true)
+		notify(p, "NÍVEL " .. d.level .. "!  Vida máxima aumentada.", "level")
+		local _, _, hrp = aliveParts(p)
+		if hrp then rFX:FireAllClients({k = "levelup", p = hrp.Position}) end
+	end
+end
+
+local function setLevel(p, level)
+	local s = sessions[p]
+	if not s then return end
+	s.data.level = math.clamp(math.floor(level), 1, Config.MaxLevel)
+	s.data.xp = 0
+	applyMaxHealth(p, true)
+	pushState(p)
+end
+
+-- ============================== QUESTS ==============================
+local function questMatches(q, kind)
+	if not q.kinds then return true end
+	return table.find(q.kinds, kind) ~= nil
+end
+
+local function questOnKill(p, kind)
+	local s = sessions[p]
+	if not s then return end
+	for id, prog in pairs(s.data.quests.active) do
+		local q = Config.QuestsById[id]
+		if q and prog < q.count and questMatches(q, kind) then
+			s.data.quests.active[id] = prog + 1
+			if prog + 1 >= q.count then
+				notify(p, "Missão pronta para entregar: " .. q.name, "quest")
+			else
+				notify(p, ("%s: %d/%d"):format(q.name, prog + 1, q.count), "quest")
+			end
+		end
+	end
+end
+
+local function countActive(d)
+	local n = 0
+	for _ in pairs(d.quests.active) do n += 1 end
+	return n
+end
+
+local function acceptQuest(p, qid)
+	local d = sessions[p].data
+	local q = Config.QuestsById[qid]
+	if not q or d.quests.active[qid] ~= nil then return false, "Missão já ativa." end
+	if d.quests.done[qid] and not q.repeatable then return false, "Missão já concluída." end
+	if countActive(d) >= Config.MaxActiveQuests then return false, "Você já tem missões demais ativas." end
+	d.quests.active[qid] = 0
+	return true, "Missão aceita: " .. q.name .. ". " .. q.desc
+end
+
+local function completeQuest(p, qid)
+	local d = sessions[p].data
+	local q = Config.QuestsById[qid]
+	if not q then return false, "Missão inválida." end
+	local prog = d.quests.active[qid]
+	if prog == nil or prog < q.count then return false, "Você ainda não terminou esta missão." end
+	d.quests.active[qid] = nil
+	if not q.repeatable then d.quests.done[qid] = true end
+	d.coins += q.coins
+	addXp(p, q.xp)
+	notify(p, ("Missão concluída! +%d moedas extras  +%d XP"):format(q.coins, q.xp), "gain")
+	return true, ("Excelente trabalho! Aqui está sua recompensa: %d moedas e %d XP."):format(q.coins, q.xp)
+end
+
+Remotes:WaitForChild("Ready").OnServerEvent:Connect(function(p)
+	if throttle(p, "ready", 1) then pushState(p) end
+end)
+
+rAbandon.OnServerEvent:Connect(function(p, qid)
+	if typeof(qid) ~= "string" or not throttle(p, "abandon", 0.3) then return end
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	if s.data.quests.active[qid] ~= nil then
+		s.data.quests.active[qid] = nil
+		notify(p, "Missão abandonada.", "warn")
+		pushState(p)
+	end
+end)
+
+-- ============================ ESPADAS/TOOLS =========================
+local function buildTool(def)
+	local tool = Instance.new("Tool")
+	tool.Name = def.name
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool.ToolTip = def.name
+	tool:SetAttribute("MigSword", def.id)
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.6, 0.6, 1.8)
+	handle.Color = def.hilt
+	handle.Material = Enum.Material.Wood
+	handle.CanCollide = false
+	handle.Parent = tool
+	local function add(size, offset, color, mat, shape)
+		local p = Instance.new("Part")
+		p.Size = size
+		p.Color = color
+		p.Material = mat
+		p.CanCollide = false
+		p.Massless = true
+		p.CanQuery = false
+		if shape then p.Shape = shape end
+		local w = Instance.new("Weld")
+		w.Part0 = handle
+		w.Part1 = p
+		w.C0 = offset
+		w.C1 = CFrame.new()
+		w.Parent = p
+		p.Parent = tool
+		return p
+	end
+	local len = def.len
+	add(Vector3.new(0.22, 0.85, len), CFrame.new(0, 0, -(0.9 + len / 2)), def.blade, Enum.Material.Metal)
+	add(Vector3.new(2, 0.35, 0.5), CFrame.new(0, 0, -0.95), Color3.fromRGB(212, 172, 60), Enum.Material.Metal)
+	add(Vector3.new(0.7, 0.7, 0.7), CFrame.new(0, 0, 0.95), Color3.fromRGB(212, 172, 60), Enum.Material.Metal, Enum.PartType.Ball)
+	if def.glow then
+		local edge = add(Vector3.new(0.27, 0.5, len - 0.3), CFrame.new(0, 0, -(0.9 + len / 2)), def.glow, Enum.Material.Neon)
+		edge.Transparency = 0.35
+		local rar = Config.Rarities[def.rarity]
+		if rar and rar.order >= 3 then
+			local l = Instance.new("PointLight")
+			l.Color = def.glow
+			l.Brightness = 1.2
+			l.Range = 10
+			l.Parent = edge
+		end
+		if rar and rar.order >= 4 then
+			local e = Instance.new("ParticleEmitter")
+			e.Color = ColorSequence.new(def.glow)
+			e.Rate = 8
+			e.Lifetime = NumberRange.new(0.6, 1)
+			e.Speed = NumberRange.new(0.5, 1.5)
+			e.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 0)})
+			e.LightEmission = 1
+			e.Parent = edge
+		end
+	end
+	return tool
+end
+
+local function refreshTool(p)
+	local s = sessions[p]
+	if not s then return end
+	local def = Config.SwordsById[s.data.equipped]
+	if not def then return end
+	local char = p.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local backpack = p:FindFirstChildOfClass("Backpack") or p:WaitForChild("Backpack", 5)
+	if not backpack then return end
+	for _, container in ipairs({backpack, char}) do
+		if container then
+			for _, c in ipairs(container:GetChildren()) do
+				if c:IsA("Tool") and c:GetAttribute("MigSword") then c:Destroy() end
+			end
+		end
+	end
+	local tool = buildTool(def)
+	tool.Parent = backpack
+	if hum and hum.Health > 0 then hum:EquipTool(tool) end
+end
+
+-- ============================== SLIMES ==============================
+local Slimes = {}
+local Spawns = {}
+local respawnEnabled = true
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.FilterDescendantsInstances = {slimeFolder}
+
+local terrainParams = RaycastParams.new()
+terrainParams.FilterType = Enum.RaycastFilterType.Include
+terrainParams.FilterDescendantsInstances = {Workspace.Terrain}
+
+local function recsInRadius(pos, radius)
+	local out = {}
+	for _, rec in ipairs(Slimes) do
+		if not rec.dead and rec.body.Parent then
+			local d = (rec.body.Position - pos).Magnitude - rec.radius
+			if d <= radius then
+				rec.tmpD = d
+				table.insert(out, rec)
+			end
+		end
+	end
+	table.sort(out, function(a, b) return a.tmpD < b.tmpD end)
+	return out
+end
+
+local function setSleep(rec, sleep)
+	if rec.dead or rec.sleep == sleep then return end
+	rec.sleep = sleep
+	rec.body.Anchored = sleep
+	if not sleep then pcall(function() rec.body:SetNetworkOwner(nil) end) end
+end
+
+local function updateSlimeGui(rec)
+	if rec.fill then rec.fill.Size = UDim2.fromScale(math.clamp(rec.hp / rec.maxHp, 0, 1), 1) end
+end
+
+local function buildSlimeGui(rec)
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "SlimeGui"
+	gui.Size = UDim2.fromOffset(120, 36)
+	gui.StudsOffset = Vector3.new(0, rec.radius + 2.2, 0)
+	gui.MaxDistance = 90
+	gui.Adornee = rec.body
+	local name = Instance.new("TextLabel")
+	name.BackgroundTransparency = 1
+	name.Size = UDim2.new(1, 0, 0, 18)
+	name.Font = Enum.Font.GothamBold
+	name.TextSize = 14
+	name.TextColor3 = Color3.new(1, 1, 1)
+	name.TextStrokeTransparency = 0.4
+	name.Text = rec.title .. "  Nv." .. rec.level
+	name.Parent = gui
+	local bg = Instance.new("Frame")
+	bg.Position = UDim2.fromOffset(0, 22)
+	bg.Size = UDim2.new(1, 0, 0, 8)
+	bg.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+	bg.BorderSizePixel = 0
+	bg.Parent = gui
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.BackgroundColor3 = rec.cfg.boss and Color3.fromRGB(255, 80, 110) or Color3.fromRGB(90, 230, 120)
+	fill.BorderSizePixel = 0
+	fill.Parent = bg
+	gui.Parent = rec.body
+	rec.fill = fill
+end
+
+local function giveKillRewards(rec, killer)
+	local cfg = rec.cfg
+	local xpBase = (8 + rec.level * 6) * cfg.xpMul
+	local coinBase = (4 + rec.level * 3) * cfg.coinMul
+	for p, dmg in pairs(rec.dmgBy) do
+		local s = sessions[p]
+		if p.Parent == Players and s and s.ready and (dmg >= rec.maxHp * 0.12 or p == killer) then
+			local d = s.data
+			local f = math.clamp(1 - math.max(0, d.level - rec.level - 5) * 0.1, 0.2, 1)
+			local xp = math.floor(xpBase * f + 0.5)
+			local coins = math.floor(coinBase * f + 0.5)
+			d.coins += coins
+			d.kills += 1
+			addXp(p, xp)
+			notify(p, ("+%d XP   +%d moedas"):format(xp, coins), "gain")
+			questOnKill(p, rec.kind)
+			if rec.kind == "ReiSlime" then
+				if not table.find(d.inventory, "king") then
+					table.insert(d.inventory, "king")
+					notify(p, "DROP MÍTICO: Lâmina do Rei Slime!", "level")
+				else
+					d.coins += 2500
+					notify(p, "Rei Slime derrotado! +2.500 moedas de bônus.", "gain")
+				end
+			end
+			pushState(p)
+		end
+	end
+end
+
+local function killSlime(rec, killer)
+	if rec.dead then return end
+	rec.dead = true
+	rec.hp = 0
+	local idx = table.find(Slimes, rec)
+	if idx then table.remove(Slimes, idx) end
+	if rec.body.Parent then
+		rFX:FireAllClients({k = "burst", p = rec.body.Position, c = rec.color, n = 18})
+	end
+	giveKillRewards(rec, killer)
+	rec.model:Destroy()
+	local sp = rec.spawn
+	if sp then
+		sp.alive = nil
+		sp.respawnAt = os.clock() + sp.respawn
+	end
+end
+
+local function damageSlime(rec, amount, p, crit)
+	if rec.dead then return 0 end
+	amount = math.min(amount, rec.hp)
+	rec.hp -= amount
+	if p then
+		local s = sessions[p]
+		rec.dmgBy[p] = (rec.dmgBy[p] or 0) + amount
+		if s then s.data.dmg += amount end
+		rFX:FireClient(p, {k = "dmg", p = rec.body.Position + Vector3.new(0, rec.radius + 1, 0), a = math.floor(amount), c = crit})
+		rec.forcedTarget = p
+		rec.forcedUntil = os.clock() + 6
+	end
+	updateSlimeGui(rec)
+	if rec.hp <= 0 then killSlime(rec, p) end
+	return amount
+end
+
+local function knock(rec, fromPos, strength)
+	if rec.dead then return end
+	setSleep(rec, false)
+	local dir = (rec.body.Position - fromPos) * Vector3.new(1, 0, 1)
+	dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(0, 0, 1)
+	local m = rec.body.AssemblyMass
+	rec.body:ApplyImpulse(Vector3.new(dir.X * strength * m, strength * 0.6 * m, dir.Z * strength * m))
+	rec.lastHop = os.clock()
+end
+
+local function spawnSlime(sp)
+	local cfg = Config.SlimeKinds[sp.kind] or Config.SlimeKinds.Slime
+	local level = math.clamp(sp.level or 1, 1, 100)
+	local size = cfg.size
+	local color = sp.color or cfg.color
+	local title = sp.title or cfg.name
+	local maxHp = math.floor((30 + 20 * level ^ 1.2) * cfg.hpMul)
+
+	local model = Instance.new("Model")
+	model.Name = title
+	local body = Instance.new("Part")
+	body.Name = "Body"
+	body.Shape = Enum.PartType.Ball
+	body.Size = Vector3.new(size, size, size)
+	body.Color = color
+	body.Material = Enum.Material.SmoothPlastic
+	body.Transparency = 0.2
+	body.CustomPhysicalProperties = PhysicalProperties.new(0.7, 1.2, 0, 1, 1)
+	body.TopSurface = Enum.SurfaceType.Smooth
+	body.BottomSurface = Enum.SurfaceType.Smooth
+	body.CFrame = CFrame.new(sp.pos + Vector3.new(0, size / 2 + 1.5, 0))
+	body.Parent = model
+
+	local function attach(part, offset)
+		part.CanCollide = false
+		part.CanQuery = false
+		part.Massless = true
+		part.Anchored = false
+		local w = Instance.new("Weld")
+		w.Part0 = body
+		w.Part1 = part
+		w.C0 = offset
+		w.C1 = CFrame.new()
+		w.Parent = part
+		part.Parent = model
+	end
+	local core = Instance.new("Part")
+	core.Shape = Enum.PartType.Ball
+	core.Size = Vector3.new(size * 0.5, size * 0.5, size * 0.5)
+	core.Color = Color3.new(color.R * 0.55, color.G * 0.55, color.B * 0.55)
+	core.Material = Enum.Material.SmoothPlastic
+	attach(core, CFrame.new(0, -size * 0.1, 0))
+	for _, sx in ipairs({-1, 1}) do
+		local eye = Instance.new("Part")
+		eye.Shape = Enum.PartType.Ball
+		eye.Size = Vector3.new(size * 0.16, size * 0.16, size * 0.16)
+		eye.Color = Color3.fromRGB(20, 20, 30)
+		eye.Material = Enum.Material.SmoothPlastic
+		attach(eye, CFrame.new(sx * size * 0.2, size * 0.12, -size * 0.43))
+	end
+
+	local att = Instance.new("Attachment")
+	att.Parent = body
+	local ao = Instance.new("AlignOrientation")
+	ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	ao.Attachment0 = att
+	ao.RigidityEnabled = true
+	ao.CFrame = CFrame.new()
+	ao.Parent = body
+
+	local rec = {
+		model = model, body = body, ao = ao, cfg = cfg, kind = sp.kind, level = level, title = title, color = color,
+		hp = maxHp, maxHp = maxHp, radius = size / 2, home = sp.pos, spawn = sp.temp and nil or sp,
+		dmg = math.floor((3 + level * 1.4) * cfg.dmgMul), dmgBy = {}, dead = false, sleep = false,
+		lastHop = 0, nextHop = os.clock() + rng:NextNumber(0, 1), atkReady = 0, slowUntil = 0, slowAmt = 0,
+		forcedUntil = 0, nextWander = 0,
+	}
+	buildSlimeGui(rec)
+	model:SetAttribute("Slime", true)
+	model:SetAttribute("Kind", sp.kind)
+	model:SetAttribute("Level", level)
+	model.PrimaryPart = body
+	model.Parent = slimeFolder
+	pcall(function() body:SetNetworkOwner(nil) end)
+	table.insert(Slimes, rec)
+	if sp.alive ~= nil or not sp.temp then sp.alive = rec end
+	return rec
+end
+
+local function nearestPlayer(pos, maxDist)
+	local best, bd = nil, maxDist
+	for _, p in ipairs(Players:GetPlayers()) do
+		local _, _, hrp = aliveParts(p)
+		if hrp then
+			local d = (hrp.Position - pos).Magnitude
+			if d < bd then best, bd = p, d end
+		end
+	end
+	return best, bd
+end
+
+local function poisonPlayer(target, perTick)
+	task.spawn(function()
+		for _ = 1, 3 do
+			task.wait(1)
+			local _, hum = aliveParts(target)
+			if not hum then return end
+			hum:TakeDamage(perTick)
+		end
+	end)
+end
+
+local function grounded(rec)
+	return Workspace:Raycast(rec.body.Position, Vector3.new(0, -(rec.radius + 0.7), 0), rayParams) ~= nil
+end
+
+local function hop(rec, dir, mult)
+	local cfg = rec.cfg
+	local t = os.clock()
+	local sf = (t < rec.slowUntil) and (1 - rec.slowAmt) or 1
+	local m = rec.body.AssemblyMass
+	local sp = cfg.speed * sf * (mult or 1)
+	rec.ao.CFrame = CFrame.lookAt(Vector3.zero, dir)
+	rec.body:ApplyImpulse(Vector3.new(dir.X * sp * m, cfg.jump * m, dir.Z * sp * m))
+	rec.lastHop = t
+end
+
+local function updateSlime(rec, dt, t)
+	local body = rec.body
+	if not body.Parent then killSlime(rec, nil) return end
+	local pos = body.Position
+	local cfg = rec.cfg
+
+	local near, nd = nearestPlayer(pos, 280)
+	if not near then setSleep(rec, true) return end
+	setSleep(rec, false)
+
+	if rec.dot then
+		if t >= rec.dot.untilT then
+			rec.dot = nil
+		elseif t >= rec.dot.nextTick then
+			rec.dot.nextTick = t + 0.5
+			damageSlime(rec, math.max(1, math.floor(rec.dot.dps * 0.5)), rec.dot.src, false)
+			if rec.dead then return end
+		end
+	end
+
+	if pos.Y < -120 or (pos - rec.home).Magnitude > 450 then
+		body.AssemblyLinearVelocity = Vector3.zero
+		body.CFrame = CFrame.new(rec.home + Vector3.new(0, 6, 0))
+		return
+	end
+
+	local homeDist = (pos - rec.home).Magnitude
+	local target = rec.target
+	if target then
+		local _, _, thrp = aliveParts(target)
+		if not thrp or target.Parent ~= Players or (thrp.Position - pos).Magnitude > cfg.aggro * 1.7 or homeDist > cfg.leash + 25 then
+			target = nil
+			rec.target = nil
+		end
+	end
+	if not target and homeDist < cfg.leash then
+		if rec.forcedTarget and t < rec.forcedUntil and aliveParts(rec.forcedTarget) then
+			target = rec.forcedTarget
+		else
+			local p = nearestPlayer(pos, cfg.aggro)
+			target = p
+		end
+		rec.target = target
+	end
+
+	local isGrounded = grounded(rec)
+	if isGrounded and t - rec.lastHop > 0.3 then
+		local v = body.AssemblyLinearVelocity
+		body.AssemblyLinearVelocity = Vector3.new(0, math.min(v.Y, 0), 0)
+	end
+
+	if target then
+		local _, thum, thrp = aliveParts(target)
+		if thrp then
+			local to = thrp.Position - pos
+			local flat = Vector3.new(to.X, 0, to.Z)
+			local dist = flat.Magnitude
+			local dir = dist > 0.1 and flat.Unit or Vector3.new(0, 0, -1)
+			rec.ao.CFrame = CFrame.lookAt(Vector3.zero, dir)
+			if dist <= rec.radius + 3.4 and math.abs(to.Y) < rec.radius + 6 then
+				if t >= rec.atkReady then
+					rec.atkReady = t + cfg.atkCd
+					thum:TakeDamage(rec.dmg)
+					rFX:FireClient(target, {k = "hurt"})
+					local m = body.AssemblyMass
+					body:ApplyImpulse(Vector3.new(dir.X * 12 * m, 18 * m, dir.Z * 12 * m))
+					rec.lastHop = t
+					if cfg.poison then poisonPlayer(target, math.max(1, math.floor(rec.dmg * 0.25))) end
+				end
+			elseif isGrounded and t >= rec.nextHop then
+				local sf = (t < rec.slowUntil) and (1 - rec.slowAmt) or 1
+				hop(rec, dir, 1)
+				rec.nextHop = t + 0.75 / sf
+			end
+		end
+	else
+		rec.hp = math.min(rec.maxHp, rec.hp + rec.maxHp * 0.04 * dt)
+		updateSlimeGui(rec)
+		if isGrounded and t >= rec.nextHop then
+			local dir
+			if homeDist > 22 then
+				local to = rec.home - pos
+				dir = Vector3.new(to.X, 0, to.Z).Unit
+			elseif rng:NextNumber() < 0.55 then
+				local a = rng:NextNumber(0, math.pi * 2)
+				dir = Vector3.new(math.cos(a), 0, math.sin(a))
+			end
+			if dir then hop(rec, dir, 0.55) end
+			rec.nextHop = t + rng:NextNumber(1.2, 2.6)
+		end
+	end
+end
+
+task.spawn(function()
+	local last = os.clock()
+	while true do
+		task.wait(0.12)
+		local t = os.clock()
+		local dt = t - last
+		last = t
+		for _, rec in ipairs(table.clone(Slimes)) do
+			if not rec.dead then
+				local ok, err = pcall(updateSlime, rec, dt, t)
+				if not ok then warn("[MigRPG] erro IA slime: " .. tostring(err)) end
+			end
+		end
+	end
+end)
+
+-- coleta de pontos de spawn do mapa (markers da pasta Inimigos)
+local function collectSpawns()
+	local inim = MIG:WaitForChild("Inimigos", 10)
+	if not inim then return end
+	local caveFloorY
+	local cav = MIG:FindFirstChild("Cavernas")
+	local interior = cav and cav:FindFirstChild("Interior_Cristalino")
+	local rune = interior and interior:FindFirstChild("CirculoRunico")
+	if rune then caveFloorY = rune:GetPivot().Position.Y end
+	for _, d in ipairs(inim:GetDescendants()) do
+		if d:IsA("BasePart") and d:GetAttribute("Tipo") then
+			local tipo = d:GetAttribute("Tipo")
+			local kind = tipo
+			if tipo == "Chefe" then kind = (d.Name == "BossSpawn_ReiSlime") and "ReiSlime" or "Chefe" end
+			if not Config.SlimeKinds[kind] then kind = "Slime" end
+			local pos = d.Position
+			local parentName = d.Parent and d.Parent.Name or ""
+			if caveFloorY and (parentName:find("^SlimeCristal_") or parentName:find("^ChefeCaverna")) then
+				local r = Workspace:Raycast(Vector3.new(pos.X, caveFloorY + 12, pos.Z), Vector3.new(0, -60, 0), terrainParams)
+				pos = r and r.Position or Vector3.new(pos.X, caveFloorY + 1, pos.Z)
+			end
+			local color = d:GetAttribute("Cor")
+			table.insert(Spawns, {
+				kind = kind, level = d:GetAttribute("Nivel") or 1, pos = pos, respawn = d:GetAttribute("Respawn") or 20,
+				color = typeof(color) == "Color3" and color or nil,
+				title = Config.NamedBosses[d.Name] or Config.NamedBosses[parentName], respawnAt = 0,
+			})
+		end
+	end
+end
+collectSpawns()
+print(("[MigRPG] %d pontos de spawn de slimes encontrados."):format(#Spawns))
+
+local function aliveSlimeCount()
+	local n = 0
+	for _, r in ipairs(Slimes) do if not r.dead then n += 1 end end
+	return n
+end
+
+task.spawn(function()
+	while true do
+		if respawnEnabled then
+			for _, sp in ipairs(Spawns) do
+				if not sp.alive and os.clock() >= sp.respawnAt then
+					local ok, err = pcall(spawnSlime, sp)
+					if not ok then
+						warn("[MigRPG] erro ao criar slime: " .. tostring(err))
+						sp.respawnAt = os.clock() + 15
+					end
+				end
+			end
+		end
+		task.wait(1)
+	end
+end)
+
+-- ============================== COMBATE =============================
+local function flatLook(hrp)
+	local v = hrp.CFrame.LookVector
+	v = Vector3.new(v.X, 0, v.Z)
+	if v.Magnitude < 0.01 then return Vector3.new(0, 0, -1) end
+	return v.Unit
+end
+
+local function calcDamage(p, mult)
+	local s = sessions[p]
+	local def = Config.SwordsById[s.data.equipped]
+	local base = def.damage * Config.DamageScale(s.data.level) * (mult or 1) * rng:NextNumber(0.9, 1.1)
+	local crit = rng:NextNumber() < def.crit
+	if crit then base *= 1.8 end
+	return math.max(1, math.floor(base + 0.5)), crit
+end
+
+local function scaledBase(p)
+	local s = sessions[p]
+	return Config.SwordsById[s.data.equipped].damage * Config.DamageScale(s.data.level)
+end
+
+local function applyDot(rec, p, spec)
+	if not spec then return end
+	rec.dot = {untilT = os.clock() + spec.dur, dps = scaledBase(p) * spec.mult, src = p, nextTick = os.clock() + 0.5}
+end
+
+local function playToolAnim(char, name)
+	local tool = char:FindFirstChildWhichIsA("Tool")
+	if tool and tool:GetAttribute("MigSword") then
+		local old = tool:FindFirstChild("toolanim")
+		if old then old:Destroy() end
+		local sv = Instance.new("StringValue")
+		sv.Name = "toolanim"
+		sv.Value = name
+		sv.Parent = tool
+	end
+end
+
+local function performAttack(p)
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	local char, hum, hrp = aliveParts(p)
+	if not hrp then return end
+	local def = Config.SwordsById[s.data.equipped]
+	local t = os.clock()
+	if t < s.attackReady then return end
+	s.attackReady = t + def.cooldown
+	playToolAnim(char, "Slash")
+	local look = flatLook(hrp)
+	rFX:FireAllClients({k = "slash", cf = hrp.CFrame * CFrame.new(0, 0.5, -3), c = def.glow or def.blade, s = def.range / 9})
+	local hits = 0
+	for _, rec in ipairs(recsInRadius(hrp.Position, def.range)) do
+		local to = rec.body.Position - hrp.Position
+		local flat = Vector3.new(to.X, 0, to.Z)
+		if flat.Magnitude < rec.radius + 1 or flat.Unit:Dot(look) > 0.25 then
+			if math.abs(to.Y) < 12 + rec.radius then
+				local dmg, crit = calcDamage(p, 1)
+				damageSlime(rec, dmg, p, crit)
+				knock(rec, hrp.Position, 14)
+				hits += 1
+				if hits >= 3 then break end
+			end
+		end
+	end
+end
+
+local Skills = {}
+
+Skills.spin = function(p, s, def, sk, char, hum, hrp)
+	rFX:FireAllClients({k = "ring", p = hrp.Position - Vector3.new(0, 2.8, 0), r = sk.radius, c = sk.color})
+	rFX:FireAllClients({k = "burst", p = hrp.Position, c = sk.color, n = 24})
+	for _, rec in ipairs(recsInRadius(hrp.Position, sk.radius)) do
+		local dmg, crit = calcDamage(p, sk.mult)
+		damageSlime(rec, dmg, p, crit)
+		knock(rec, hrp.Position, 24)
+	end
+	return true
+end
+
+Skills.dash = function(p, s, def, sk, char, hum, hrp)
+	local dir = flatLook(hrp)
+	local start = hrp.Position
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = {char, slimeFolder}
+	local res = Workspace:Raycast(start, dir * sk.dist, rp)
+	local dist = res and math.max(0, res.Distance - 2.5) or sk.dist
+	local goal = start + dir * dist
+	rFX:FireAllClients({k = "dash", a = start, b = goal, c = sk.color})
+	hrp.CFrame = CFrame.lookAt(goal, goal + dir)
+	for _, rec in ipairs(recsInRadius(start + dir * (dist / 2), dist / 2 + sk.width)) do
+		local to = rec.body.Position - start
+		local along = to:Dot(dir)
+		local lateral = (to - dir * along) * Vector3.new(1, 0, 1)
+		if along > -3 and along < dist + 3 and lateral.Magnitude <= sk.width / 2 + rec.radius then
+			local dmg, crit = calcDamage(p, sk.mult)
+			damageSlime(rec, dmg, p, crit)
+			knock(rec, start, 20)
+		end
+	end
+	return true
+end
+
+Skills.wave = function(p, s, def, sk, char, hum, hrp)
+	local dir = flatLook(hrp)
+	local start = hrp.Position
+	rFX:FireAllClients({k = "wave", a = start - Vector3.new(0, 2.5, 0), b = start + dir * sk.length - Vector3.new(0, 2.5, 0), w = sk.width, c = sk.color})
+	for _, rec in ipairs(recsInRadius(start, sk.length + 6)) do
+		local to = rec.body.Position - start
+		local along = to:Dot(dir)
+		local lateral = (to - dir * along) * Vector3.new(1, 0, 1)
+		if along > -2 and along < sk.length + rec.radius and lateral.Magnitude <= sk.width / 2 + rec.radius then
+			local dmg, crit = calcDamage(p, sk.mult)
+			damageSlime(rec, dmg, p, crit)
+			applyDot(rec, p, sk.dot)
+			knock(rec, start, 12)
+		end
+	end
+	return true
+end
+
+Skills.chain = function(p, s, def, sk, char, hum, hrp)
+	local first = recsInRadius(hrp.Position, sk.range)[1]
+	if not first then return false, "Nenhum alvo por perto." end
+	local hit = {}
+	local cur = first
+	local prev = hrp.Position + Vector3.new(0, 2, 0)
+	for _ = 1, sk.targets do
+		if not cur then break end
+		hit[cur] = true
+		local cpos = cur.body.Position
+		rFX:FireAllClients({k = "bolt", a = prev, b = cpos, c = sk.color})
+		local dmg, crit = calcDamage(p, sk.mult)
+		damageSlime(cur, dmg, p, crit)
+		prev = cpos
+		local nxt = nil
+		for _, r2 in ipairs(recsInRadius(cpos, 18)) do
+			if not hit[r2] then nxt = r2 break end
+		end
+		cur = nxt
+	end
+	return true
+end
+
+Skills.blast = function(p, s, def, sk, char, hum, hrp)
+	local center = hrp.Position + flatLook(hrp) * sk.forward
+	rFX:FireAllClients({k = "ring", p = center - Vector3.new(0, 2.8, 0), r = sk.radius, c = sk.color})
+	rFX:FireAllClients({k = "beam", p = center - Vector3.new(0, 2.8, 0), h = 22, r = 3, c = sk.color})
+	rFX:FireAllClients({k = "burst", p = center, c = sk.color, n = 30})
+	for _, rec in ipairs(recsInRadius(center, sk.radius)) do
+		local dmg, crit = calcDamage(p, sk.mult)
+		damageSlime(rec, dmg, p, crit)
+		applyDot(rec, p, sk.dot)
+		knock(rec, center, 18)
+	end
+	return true
+end
+
+Skills.freeze = function(p, s, def, sk, char, hum, hrp)
+	rFX:FireAllClients({k = "ring", p = hrp.Position - Vector3.new(0, 2.8, 0), r = sk.radius, c = sk.color})
+	rFX:FireAllClients({k = "burst", p = hrp.Position, c = sk.color, n = 30})
+	for _, rec in ipairs(recsInRadius(hrp.Position, sk.radius)) do
+		local dmg, crit = calcDamage(p, sk.mult)
+		damageSlime(rec, dmg, p, crit)
+		rec.slowUntil = os.clock() + sk.dur
+		rec.slowAmt = sk.slow
+	end
+	return true
+end
+
+Skills.rain = function(p, s, def, sk, char, hum, hrp)
+	local list = recsInRadius(hrp.Position, sk.radius)
+	if #list == 0 then return false, "Nenhum alvo por perto." end
+	for i = 1, sk.count do
+		local pick = list[((i - 1) % #list) + 1]
+		task.delay(0.15 * i, function()
+			if pick.dead or not pick.body.Parent then return end
+			local tp = pick.body.Position
+			rFX:FireAllClients({k = "meteor", p = tp, c = sk.color})
+			task.delay(0.5, function()
+				if pick.dead then return end
+				local dmg, crit = calcDamage(p, sk.mult)
+				damageSlime(pick, dmg, p, crit)
+			end)
+		end)
+	end
+	return true
+end
+
+Skills.drain = function(p, s, def, sk, char, hum, hrp)
+	rFX:FireAllClients({k = "ring", p = hrp.Position - Vector3.new(0, 2.8, 0), r = sk.radius, c = sk.color})
+	rFX:FireAllClients({k = "burst", p = hrp.Position, c = sk.color, n = 26})
+	local total = 0
+	for _, rec in ipairs(recsInRadius(hrp.Position, sk.radius)) do
+		local dmg, crit = calcDamage(p, sk.mult)
+		total += damageSlime(rec, dmg, p, crit)
+	end
+	hum.Health = math.min(hum.MaxHealth, hum.Health + total * sk.heal)
+	return true
+end
+
+Skills.beam = function(p, s, def, sk, char, hum, hrp)
+	local center = hrp.Position + flatLook(hrp) * sk.forward
+	rFX:FireAllClients({k = "beam", p = center - Vector3.new(0, 2.8, 0), h = 90, r = sk.radius * 0.45, c = sk.color})
+	rFX:FireAllClients({k = "ring", p = center - Vector3.new(0, 2.8, 0), r = sk.radius, c = sk.color})
+	for _, rec in ipairs(recsInRadius(center, sk.radius)) do
+		local dmg, crit = calcDamage(p, sk.mult)
+		damageSlime(rec, dmg, p, crit)
+		knock(rec, center, 22)
+	end
+	return true
+end
+
+Skills.pull = function(p, s, def, sk, char, hum, hrp)
+	local list = recsInRadius(hrp.Position, sk.radius)
+	if #list == 0 then return false, "Nenhum alvo por perto." end
+	rFX:FireAllClients({k = "ring", p = hrp.Position - Vector3.new(0, 2.8, 0), r = sk.radius, c = sk.color})
+	for _, rec in ipairs(list) do
+		setSleep(rec, false)
+		local to = hrp.Position - rec.body.Position
+		rec.body.AssemblyLinearVelocity = Vector3.new(to.X * 1.8, 24, to.Z * 1.8)
+		rec.lastHop = os.clock()
+	end
+	task.delay(0.9, function()
+		local _, _, h2 = aliveParts(p)
+		local pos = h2 and h2.Position or hrp.Position
+		rFX:FireAllClients({k = "ring", p = pos - Vector3.new(0, 2.8, 0), r = 14, c = sk.color})
+		rFX:FireAllClients({k = "beam", p = pos - Vector3.new(0, 2.8, 0), h = 30, r = 5, c = sk.color})
+		for _, rec in ipairs(recsInRadius(pos, 14)) do
+			local dmg, crit = calcDamage(p, sk.mult)
+			damageSlime(rec, dmg, p, crit)
+		end
+	end)
+	return true
+end
+
+local function castSkill(p)
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	local char, hum, hrp = aliveParts(p)
+	if not hrp then return end
+	local def = Config.SwordsById[s.data.equipped]
+	local sk = def.skill
+	if stn() < (s.skillCd[def.id] or 0) then return end
+	local fn = Skills[sk.kind]
+	if not fn then return end
+	local ok, used, msg = pcall(fn, p, s, def, sk, char, hum, hrp)
+	if not ok then warn("[MigRPG] erro na habilidade: " .. tostring(used)) return end
+	if used == false then
+		if msg then notify(p, msg, "warn") end
+		return
+	end
+	playToolAnim(char, "Lunge")
+	s.skillCd[def.id] = stn() + sk.cd
+	pushState(p)
+end
+
+rAttack.OnServerEvent:Connect(function(p)
+	if not throttle(p, "attack", 0.04) then return end
+	performAttack(p)
+end)
+rSkill.OnServerEvent:Connect(function(p)
+	if not throttle(p, "skill", 0.2) then return end
+	castSkill(p)
+end)
+
+-- ============================ LOJA / EQUIP ==========================
+local npcPos = {}
+local function nearShopNpc(p)
+	local _, _, hrp = aliveParts(p)
+	if not hrp then return false end
+	for name, cfg in pairs(Config.NPCs) do
+		if cfg.shop and npcPos[name] and (npcPos[name] - hrp.Position).Magnitude <= Config.SHOP_NPC_RANGE then return true end
+	end
+	return false
+end
+
+rBuy.OnServerEvent:Connect(function(p, id)
+	if typeof(id) ~= "string" or not throttle(p, "buy", 0.4) then return end
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	local def = Config.SwordsById[id]
+	if not def or not def.shop then notify(p, "Esta espada não está à venda.", "err") return end
+	if Config.SHOP_REQUIRES_NPC and not nearShopNpc(p) then notify(p, "Vá até um ferreiro para comprar.", "warn") return end
+	local d = s.data
+	if table.find(d.inventory, id) then notify(p, "Você já possui esta espada.", "warn") return end
+	if d.coins < def.price then notify(p, "Moedas insuficientes!", "err") return end
+	d.coins -= def.price
+	table.insert(d.inventory, id)
+	notify(p, "Comprou " .. def.name .. "!", "gain")
+	pushState(p)
+end)
+
+rEquip.OnServerEvent:Connect(function(p, id)
+	if typeof(id) ~= "string" or not throttle(p, "equip", 0.4) then return end
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	if not table.find(s.data.inventory, id) then return end
+	if Config.SHOP_REQUIRES_NPC and not nearShopNpc(p) then notify(p, "Vá até um ferreiro para trocar de espada.", "warn") return end
+	s.data.equipped = id
+	refreshTool(p)
+	notify(p, "Equipou " .. Config.SwordsById[id].name, "ok")
+	pushState(p)
+end)
+
+-- ============================== DIÁLOGO =============================
+local function buildDialogue(p, npcName, text)
+	local cfg = Config.NPCs[npcName] or {text = "Olá, viajante!"}
+	local d = sessions[p].data
+	local options = {}
+	if cfg.quests then
+		for _, qid in ipairs(cfg.quests) do
+			local q = Config.QuestsById[qid]
+			local prog = d.quests.active[qid]
+			if prog ~= nil then
+				if prog >= q.count then
+					table.insert(options, {id = "turn:" .. qid, label = "Entregar missão: " .. q.name})
+				else
+					table.insert(options, {id = "info:" .. qid, label = ("Em andamento: %s (%d/%d)"):format(q.name, prog, q.count)})
+				end
+			elseif q.repeatable or not d.quests.done[qid] then
+				table.insert(options, {id = "accept:" .. qid, label = "Aceitar missão: " .. q.name})
+			end
+		end
+	end
+	if cfg.shop then table.insert(options, {id = "shop", label = "Ver espadas", close = true}) end
+	if cfg.rest then table.insert(options, {id = "rest", label = ("Descansar (%d moedas) — curar vida"):format(Config.RestCost)}) end
+	if cfg.tip then table.insert(options, {id = "tip", label = "Preciso de uma dica"}) end
+	table.insert(options, {id = "bye", label = "Até logo", close = true})
+	return {npc = npcName, text = text or cfg.text, options = options, pos = npcPos[npcName]}
+end
+
+local function openDialogue(p, npcName)
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	local pos = npcPos[npcName]
+	local _, _, hrp = aliveParts(p)
+	if not pos or not hrp or (hrp.Position - pos).Magnitude > 30 then return end
+	rDialogue:FireClient(p, buildDialogue(p, npcName))
+end
+
+rChoice.OnServerEvent:Connect(function(p, npcName, optId)
+	if typeof(npcName) ~= "string" or typeof(optId) ~= "string" then return end
+	if not throttle(p, "dlg", 0.2) then return end
+	local s = sessions[p]
+	if not (s and s.ready) then return end
+	local pos = npcPos[npcName]
+	local char, hum, hrp = aliveParts(p)
+	if not pos or not hrp or (hrp.Position - pos).Magnitude > 30 then return end
+	local valid = false
+	for _, o in ipairs(buildDialogue(p, npcName).options) do
+		if o.id == optId then valid = true break end
+	end
+	if not valid then return end
+	local cfg = Config.NPCs[npcName] or {}
+	local kind, arg = optId:match("^(%w+):?(.*)$")
+	local reply = nil
+	if kind == "accept" then
+		local ok, msg = acceptQuest(p, arg)
+		reply = msg
+	elseif kind == "turn" then
+		local ok, msg = completeQuest(p, arg)
+		reply = msg
+	elseif kind == "info" then
+		local q = Config.QuestsById[arg]
+		reply = q and (q.desc .. " Volte quando terminar.") or "..."
+	elseif kind == "shop" then
+		rOpenShop:FireClient(p)
+		return
+	elseif kind == "rest" then
+		if s.data.coins < Config.RestCost then
+			reply = "Você não tem moedas suficientes. Volte quando tiver."
+		else
+			s.data.coins -= Config.RestCost
+			hum.Health = hum.MaxHealth
+			reply = "Pronto! Você está novinho em folha."
+		end
+	elseif kind == "tip" then
+		reply = cfg.tip or "Boa sorte na jornada!"
+	elseif kind == "bye" then
+		return
+	end
+	pushState(p)
+	rDialogue:FireClient(p, buildDialogue(p, npcName, reply))
+end)
+
+local function hookPrompt(prompt)
+	local npcName = prompt:GetAttribute("NPC")
+	if not npcName then return end
+	prompt.Triggered:Connect(function(p) openDialogue(p, npcName) end)
+end
+local npcFolder = MIG:WaitForChild("NPCs", 10)
+if npcFolder then
+	for _, model in ipairs(npcFolder:GetChildren()) do
+		local marker = model:FindFirstChild("PontoNPC")
+		if marker and marker:GetAttribute("NPC") then npcPos[marker:GetAttribute("NPC")] = marker.Position end
+	end
+	for _, d in ipairs(npcFolder:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then hookPrompt(d) end
+	end
+	npcFolder.DescendantAdded:Connect(function(d)
+		if d:IsA("ProximityPrompt") then hookPrompt(d) end
+	end)
+end
+
+-- ============================== SPRINT ==============================
+rSprint.OnServerEvent:Connect(function(p, on)
+	if typeof(on) ~= "boolean" or not throttle(p, "sprint", 0.05) then return end
+	local s = sessions[p]
+	if s then s.wantSprint = on end
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+	local t = os.clock()
+	for p, s in pairs(sessions) do
+		if s.ready then
+			local _, hum, hrp = aliveParts(p)
+			if hum then
+				local moving = hum.MoveDirection.Magnitude > 0.1
+				local exhausted = t < s.exhaustedUntil
+				local canSprint = (not exhausted) and (not s.needRecover) and s.stamina > 0
+				local sprinting = s.wantSprint and canSprint and moving
+				if sprinting then
+					s.stamina = math.max(0, s.stamina - Config.SPRINT_DRAIN * dt)
+					s.regenAt = t + Config.SPRINT_STOP_DELAY
+					if s.stamina <= 0 then
+						s.exhaustedUntil = t + Config.SPRINT_EXHAUST_DELAY
+						s.regenAt = s.exhaustedUntil
+						s.needRecover = true
+						s.wantSprint = false
+					end
+				elseif t >= s.regenAt then
+					s.stamina = math.min(100, s.stamina + Config.SPRINT_REGEN * dt)
+					if s.needRecover and s.stamina >= 15 then s.needRecover = false end
+				end
+				local target = Config.WALK_SPEED * s.speedMult * (sprinting and (Config.SPRINT_SPEED / Config.WALK_SPEED) or 1)
+				if math.abs(hum.WalkSpeed - target) > 0.01 then hum.WalkSpeed = target end
+				local flag = sprinting and 1 or ((t < s.exhaustedUntil) and 2 or 0)
+				local remain = math.max(0, s.exhaustedUntil - t)
+				if t - s.lastSend > 0.1 and (math.abs(s.stamina - s.lastSentVal) >= 0.5 or flag ~= s.lastSentFlag or flag == 2) then
+					s.lastSend = t
+					s.lastSentVal = s.stamina
+					s.lastSentFlag = flag
+					rStamina:FireClient(p, s.stamina, flag, remain)
+				end
+			end
+		end
+	end
+end)
+
+-- ============================== ADMIN ===============================
+local function findPlayer(name)
+	name = string.lower(name)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.lower(p.Name) == name then return p end
+	end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.lower(p.Name):sub(1, #name) == name or string.lower(p.DisplayName):sub(1, #name) == name then return p end
+	end
+	return nil
+end
+
+local function targets(admin, name)
+	if name == nil or name == "" then return {admin} end
+	if string.lower(name) == "all" or string.lower(name) == "todos" then return Players:GetPlayers() end
+	local p = findPlayer(name)
+	return p and {p} or {}
+end
+
+local lastAdmin = {}
+rAdmin.OnServerEvent:Connect(function(admin, cmd, args)
+	if not isAdmin(admin) then
+		warn("[MigRPG] Tentativa de comando admin negada: " .. admin.Name)
+		return
+	end
+	if typeof(cmd) ~= "string" then return end
+	if typeof(args) ~= "table" then args = {} end
+	if not throttle(admin, "admin", 0.15) then return end
+	local tname = typeof(args.target) == "string" and args.target or ""
+	local num = typeof(args.value) == "number" and args.value or nil
+
+	if cmd == "heal" then
+		for _, p in ipairs(targets(admin, tname)) do
+			local _, hum = aliveParts(p)
+			if hum then hum.Health = hum.MaxHealth end
+		end
+		notify(admin, "Cura aplicada.", "ok")
+	elseif cmd == "speed" then
+		if not num then return end
+		num = math.clamp(num, 0.5, 5)
+		for _, p in ipairs(targets(admin, tname)) do
+			local s = sessions[p]
+			if s then s.speedMult = num pushState(p) end
+		end
+		notify(admin, "Velocidade ×" .. num, "ok")
+	elseif cmd == "coins" then
+		if not num or (args.mode ~= "add" and args.mode ~= "set") then return end
+		num = math.clamp(math.floor(num), -1e9, 1e9)
+		for _, p in ipairs(targets(admin, tname)) do
+			local s = sessions[p]
+			if s then
+				s.data.coins = math.clamp((args.mode == "set") and num or (s.data.coins + num), 0, 2e9)
+				pushState(p)
+			end
+		end
+		notify(admin, "Moedas atualizadas.", "ok")
+	elseif cmd == "level" then
+		if not num then return end
+		for _, p in ipairs(targets(admin, tname)) do setLevel(p, num) end
+		notify(admin, "Nível definido.", "ok")
+	elseif cmd == "give_sword" or cmd == "remove_sword" then
+		local id = args.sword
+		if typeof(id) ~= "string" or not Config.SwordsById[id] then return end
+		for _, p in ipairs(targets(admin, tname)) do
+			local s = sessions[p]
+			if s then
+				local idx = table.find(s.data.inventory, id)
+				if cmd == "give_sword" and not idx then
+					table.insert(s.data.inventory, id)
+				elseif cmd == "remove_sword" and idx and id ~= "wood" then
+					table.remove(s.data.inventory, idx)
+					if s.data.equipped == id then s.data.equipped = "wood" refreshTool(p) end
+				end
+				pushState(p)
+			end
+		end
+		notify(admin, "Inventário atualizado.", "ok")
+	elseif cmd == "tp_poi" then
+		local name = args.name
+		local folder = MIG:FindFirstChild("PontosDeInteresse")
+		local marker = typeof(name) == "string" and folder and folder:FindFirstChild("POI_" .. name)
+		local _, _, hrp = aliveParts(admin)
+		if marker and hrp then
+			hrp.CFrame = CFrame.new(marker.Position + Vector3.new(0, 6, 0))
+			notify(admin, "Teleportado: " .. name, "ok")
+		end
+	elseif cmd == "tp_to" or cmd == "bring" then
+		local other = findPlayer(tname)
+		if not other or other == admin then notify(admin, "Jogador não encontrado.", "err") return end
+		local _, _, ah = aliveParts(admin)
+		local _, _, oh = aliveParts(other)
+		if ah and oh then
+			if cmd == "tp_to" then ah.CFrame = oh.CFrame * CFrame.new(0, 0, 5) else oh.CFrame = ah.CFrame * CFrame.new(0, 0, -5) end
+		end
+	elseif cmd == "slimes_kill" then
+		local n = 0
+		for _, rec in ipairs(table.clone(Slimes)) do
+			if not rec.dead then rec.dmgBy = {} killSlime(rec, nil) n += 1 end
+		end
+		notify(admin, n .. " slimes removidos (sem recompensa).", "ok")
+	elseif cmd == "slimes_respawn" then
+		for _, sp in ipairs(Spawns) do
+			if sp.alive then sp.alive.dmgBy = {} killSlime(sp.alive, nil) end
+			sp.respawnAt = 0
+		end
+		notify(admin, "Todos os slimes serão recriados.", "ok")
+	elseif cmd == "slimes_toggle" then
+		respawnEnabled = not respawnEnabled
+		notify(admin, "Respawn de slimes: " .. (respawnEnabled and "LIGADO" or "DESLIGADO"), "ok")
+	elseif cmd == "slimes_count" then
+		notify(admin, ("Slimes vivos: %d / spawns: %d / respawn: %s"):format(aliveSlimeCount(), #Spawns, respawnEnabled and "ligado" or "desligado"), "ok")
+	elseif cmd == "slime_spawn" then
+		local kind = args.kind
+		if typeof(kind) ~= "string" or not Config.SlimeKinds[kind] then return end
+		local _, _, hrp = aliveParts(admin)
+		if not hrp then return end
+		local lvl = math.clamp(math.floor(num or 1), 1, 100)
+		spawnSlime({kind = kind, level = lvl, pos = hrp.Position + hrp.CFrame.LookVector * 12, respawn = 0, temp = true})
+		notify(admin, "Slime criado.", "ok")
+	end
+end)
+
+-- ============================ CICLO DO JOGADOR ======================
+local function onCharacter(p, char)
+	local s = sessions[p]
+	if not s then return end
+	local waited = 0
+	while not s.ready and p.Parent == Players and waited < 30 do task.wait(0.2) waited += 0.2 end
+	if not s.ready then return end
+	local hum = char:WaitForChild("Humanoid", 10)
+	local hrp = char:WaitForChild("HumanoidRootPart", 10)
+	if not hum or not hrp then return end
+	applyMaxHealth(p, true)
+	s.stamina = 100
+	s.wantSprint = false
+	s.exhaustedUntil = 0
+	s.needRecover = false
+	hum.WalkSpeed = Config.WALK_SPEED * s.speedMult
+	refreshTool(p)
+	pushState(p)
+end
+
+local function onJoin(p)
+	local s = {
+		data = defaultData(), ready = false, canSave = false, saving = false,
+		stamina = 100, wantSprint = false, exhaustedUntil = 0, needRecover = false, regenAt = 0,
+		lastSend = 0, lastSentVal = 100, lastSentFlag = 0, attackReady = 0, skillCd = {}, speedMult = 1,
+	}
+	sessions[p] = s
+	p.CharacterAdded:Connect(function(char) onCharacter(p, char) end)
+	local ok, raw = loadData(p)
+	if ok then
+		s.data = sanitize(raw)
+		s.canSave = true
+	else
+		s.data = defaultData()
+		s.canSave = false
+	end
+	s.ready = true
+	pushState(p)
+	if not ok then
+		notify(p, "Falha ao carregar seus dados: o progresso desta sessão NÃO será salvo.", "err")
+	end
+	if p.Character then task.spawn(onCharacter, p, p.Character) end
+end
+
+Players.PlayerAdded:Connect(onJoin)
+for _, p in ipairs(Players:GetPlayers()) do task.spawn(onJoin, p) end
+
+Players.PlayerRemoving:Connect(function(p)
+	saveData(p)
+	sessions[p] = nil
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(90)
+		for p in pairs(sessions) do task.spawn(saveData, p) end
+	end
+end)
+
+game:BindToClose(function()
+	local pending = 0
+	for p in pairs(sessions) do
+		pending += 1
+		task.spawn(function()
+			saveData(p)
+			pending -= 1
+		end)
+	end
+	local waited = 0
+	while pending > 0 and waited < 25 do task.wait(0.25) waited += 0.25 end
+end)
+
+print("[MigRPG] Servidor do RPG iniciado.")
+]=====]
+
+-- ---------------------------------------------------------------------
+local CLIENT_SRC = [=====[
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local Debris = game:GetService("Debris")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local MigRPG = RS:WaitForChild("MigRPG")
+local Config = require(MigRPG:WaitForChild("Config"))
+local Remotes = MigRPG:WaitForChild("Remotes")
+local function remote(n) return Remotes:WaitForChild(n) end
+local rState, rNotify, rDialogue, rChoice = remote("State"), remote("Notify"), remote("Dialogue"), remote("DialogChoice")
+local rOpenShop, rAttack, rSkill, rEquip, rBuy = remote("OpenShop"), remote("Attack"), remote("Skill"), remote("Equip"), remote("Buy")
+local rSprint, rStamina, rFX, rAdmin, rAbandon = remote("Sprint"), remote("Stamina"), remote("FX"), remote("AdminCmd"), remote("QuestAbandon")
+
+local isTouch = UIS.TouchEnabled
+
+for _ = 1, 10 do
+	local ok = pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, false)
+	end)
+	if ok then break end
+	task.wait(0.5)
+end
+
+-- ============================== TEMA ================================
+local T = {
+	bg = Color3.fromRGB(14, 16, 30), bg2 = Color3.fromRGB(18, 20, 38), panel = Color3.fromRGB(24, 27, 50), panel2 = Color3.fromRGB(34, 38, 70),
+	accent = Color3.fromRGB(124, 92, 255), accent2 = Color3.fromRGB(0, 208, 255), text = Color3.fromRGB(236, 238, 255),
+	sub = Color3.fromRGB(150, 156, 190), good = Color3.fromRGB(90, 230, 140), bad = Color3.fromRGB(255, 90, 110),
+	gold = Color3.fromRGB(255, 200, 70), warn = Color3.fromRGB(255, 170, 60),
+}
+
+local function mk(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props or {}) do o[k] = v end
+	if parent then o.Parent = parent end
+	return o
+end
+local function round(o, r) return mk("UICorner", {CornerRadius = UDim.new(0, r or 8)}, o) end
+local function stroke(o, c, t, tr) return mk("UIStroke", {Color = c, Thickness = t or 1, Transparency = tr or 0, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, o) end
+local function grad(o, c0, c1, rot) return mk("UIGradient", {Color = ColorSequence.new(c0, c1), Rotation = rot or 90}, o) end
+local function tw(o, props, t, style, dir)
+	TweenService:Create(o, TweenInfo.new(t or 0.25, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), props):Play()
+end
+local function fmt(n)
+	local s = tostring(math.floor(n))
+	local r = s:reverse():gsub("(%d%d%d)", "%1."):reverse()
+	return (r:gsub("^%.", ""))
+end
+local function label(parent, text, size, color, font, props)
+	local l = mk("TextLabel", {BackgroundTransparency = 1, Text = text, TextSize = size or 14, TextColor3 = color or T.text,
+		Font = font or Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true}, parent)
+	if props then for k, v in pairs(props) do l[k] = v end end
+	return l
+end
+
+local state = {coins = 0, level = 1, xp = 0, need = 50, inv = {"wood"}, equipped = "wood", kills = 0, dmg = 0,
+	active = {}, done = {}, admin = false, skillReady = 0, canSave = true, speedMult = 1}
+
+-- ============================== RAIZ ================================
+local pg = player:WaitForChild("PlayerGui")
+local oldGui = pg:FindFirstChild("MigUI")
+if oldGui then oldGui:Destroy() end
+local gui = mk("ScreenGui", {Name = "MigUI", ResetOnSpawn = false, DisplayOrder = 5, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, pg)
+local root = mk("Frame", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1}, gui)
+local uiScale = mk("UIScale", {}, root)
+local function updateScale()
+	local cam = Workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	local s = math.clamp(math.min(vp.X / 1280, vp.Y / 720), 0.62, 1.15)
+	uiScale.Scale = s
+	root.Size = UDim2.fromScale(1 / s, 1 / s)
+end
+updateScale()
+do
+	local cam = Workspace.CurrentCamera
+	if cam then cam:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
+end
+
+-- ============================== HUD =================================
+local info = mk("Frame", {Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(260, 48), BackgroundTransparency = 1}, root)
+local badge = mk("Frame", {Size = UDim2.fromOffset(46, 46), BackgroundColor3 = Color3.new(1, 1, 1)}, info)
+round(badge, 23) grad(badge, T.accent, T.accent2, 45) stroke(badge, Color3.new(1, 1, 1), 2, 0.5)
+local lvlText = label(badge, "1", 20, Color3.new(1, 1, 1), Enum.Font.GothamBlack, {Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center})
+local coinPill = mk("Frame", {Position = UDim2.fromOffset(54, 6), Size = UDim2.fromOffset(200, 34), BackgroundColor3 = T.panel}, info)
+round(coinPill, 17) stroke(coinPill, T.gold, 1.5, 0.4)
+local coinIcon = mk("Frame", {Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(22, 22), BackgroundColor3 = T.gold}, coinPill)
+round(coinIcon, 11)
+label(coinIcon, "$", 14, Color3.fromRGB(120, 80, 0), Enum.Font.GothamBlack, {Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center})
+local coinText = label(coinPill, "0", 17, T.gold, Enum.Font.GothamBold, {Position = UDim2.fromOffset(36, 0), Size = UDim2.new(1, -42, 1, 0)})
+
+-- barra superior
+local topBar = mk("Frame", {AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10), Size = UDim2.fromOffset(640, 42), BackgroundTransparency = 1}, root)
+mk("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, topBar)
+local topButtons = {}
+local function topButton(text, panelName, order)
+	local b = mk("TextButton", {Size = UDim2.fromOffset(122, 40), BackgroundColor3 = Color3.new(1, 1, 1), Text = text, Font = Enum.Font.GothamBold,
+		TextSize = 14, TextColor3 = T.text, AutoButtonColor = false, LayoutOrder = order}, topBar)
+	round(b, 10) grad(b, T.panel2, T.panel, 90) stroke(b, T.accent, 1.5, 0.5)
+	b.MouseEnter:Connect(function() tw(b, {Size = UDim2.fromOffset(128, 42)}, 0.12) end)
+	b.MouseLeave:Connect(function() tw(b, {Size = UDim2.fromOffset(122, 40)}, 0.12) end)
+	topButtons[panelName] = b
+	return b
+end
+
+-- barras
+local bars = mk("Frame", {AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14), Size = UDim2.fromOffset(360, 82), BackgroundTransparency = 1}, root)
+local function makeBar(y, c0, c1)
+	local bg = mk("Frame", {Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Color3.fromRGB(12, 14, 26)}, bars)
+	round(bg, 11) stroke(bg, Color3.fromRGB(70, 76, 120), 1.5)
+	local fill = mk("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1)}, bg)
+	round(fill, 11)
+	local g = grad(fill, c0, c1, 0)
+	local txt = mk("TextLabel", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = T.text,
+		TextStrokeTransparency = 0.5, ZIndex = 3, Text = ""}, bg)
+	return {bg = bg, fill = fill, txt = txt, grad = g, disp = 1}
+end
+local hpBar = makeBar(0, Color3.fromRGB(255, 80, 110), Color3.fromRGB(255, 140, 120))
+local xpBar = makeBar(30, T.accent, T.accent2)
+local spBar = makeBar(60, Color3.fromRGB(255, 190, 60), Color3.fromRGB(255, 235, 120))
+xpBar.disp = 0
+local stam = {value = 100, flag = 0, remain = 0}
+
+-- toasts
+local toastBox = mk("Frame", {AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 62), Size = UDim2.fromOffset(440, 200), BackgroundTransparency = 1}, root)
+mk("UIListLayout", {Padding = UDim.new(0, 6), HorizontalAlignment = Enum.HorizontalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder}, toastBox)
+local toastKinds = {ok = T.accent2, info = T.accent, gain = T.gold, warn = T.warn, err = T.bad, level = T.good, quest = T.accent2}
+local toastN = 0
+local function toast(text, kind)
+	toastN += 1
+	local c = toastKinds[kind] or T.accent
+	local f = mk("CanvasGroup", {Size = UDim2.fromOffset(420, 34), BackgroundColor3 = T.panel, GroupTransparency = 1, LayoutOrder = toastN}, toastBox)
+	round(f, 10) stroke(f, c, 1.5, 0.2)
+	mk("Frame", {Size = UDim2.new(0, 5, 1, 0), BackgroundColor3 = c, BorderSizePixel = 0}, f)
+	label(f, text, 14, T.text, Enum.Font.GothamBold, {Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -20, 1, 0), TextWrapped = false})
+	tw(f, {GroupTransparency = 0}, 0.2)
+	task.delay(3.2, function()
+		tw(f, {GroupTransparency = 1}, 0.4)
+		task.delay(0.45, function() f:Destroy() end)
+	end)
+end
+rNotify.OnClientEvent:Connect(toast)
+
+-- botões de ação
+local function circleButton(size, pos, anchor, text, c0, c1)
+	local cg = mk("CanvasGroup", {Size = UDim2.fromOffset(size, size), Position = pos, AnchorPoint = anchor, BackgroundColor3 = Color3.new(1, 1, 1)}, root)
+	round(cg, size / 2) grad(cg, c0, c1, 90) stroke(cg, Color3.new(1, 1, 1), 2, 0.55)
+	local btn = mk("TextButton", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 5}, cg)
+	local lbl = label(cg, text, size > 90 and 15 or 13, Color3.new(1, 1, 1), Enum.Font.GothamBlack, {Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 4, TextStrokeTransparency = 0.6})
+	return cg, btn, lbl
+end
+
+local skillPos, skillAnchor, skillSize
+if isTouch then skillPos, skillAnchor, skillSize = UDim2.new(1, -140, 0.58, 40), Vector2.new(1, 0.5), 76
+else skillPos, skillAnchor, skillSize = UDim2.new(1, -24, 1, -24), Vector2.new(1, 1), 84 end
+local skillCG, skillBtn, skillLbl = circleButton(skillSize, skillPos, skillAnchor, "HABILIDADE", T.accent, T.accent2)
+local skillOverlay = mk("Frame", {AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.35, ZIndex = 6}, skillCG)
+local skillTime = label(skillCG, "", 20, Color3.new(1, 1, 1), Enum.Font.GothamBlack, {Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 7})
+local skillKey = label(skillCG, isTouch and "" or "[Q]", 12, Color3.new(1, 1, 1), Enum.Font.GothamBold, {AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -6), Size = UDim2.new(1, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 7})
+
+local attackHeld = false
+local sprintToggled = false
+local lastSprintSent = false
+local function setSprint(on)
+	if on == lastSprintSent then return end
+	lastSprintSent = on
+	rSprint:FireServer(on)
+end
+local attackCG, attackBtn, sprintCG, sprintBtn, sprintLbl
+if isTouch then
+	attackCG, attackBtn = circleButton(100, UDim2.new(1, -24, 0.58, 0), Vector2.new(1, 0.5), "ATACAR", T.bad, Color3.fromRGB(255, 150, 90))
+	sprintCG, sprintBtn, sprintLbl = circleButton(76, UDim2.new(1, -30, 0.58, -112), Vector2.new(1, 0.5), "CORRER", Color3.fromRGB(255, 170, 40), Color3.fromRGB(255, 225, 100))
+	attackBtn.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then attackHeld = true end
+	end)
+	attackBtn.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then attackHeld = false end
+	end)
+	sprintBtn.Activated:Connect(function()
+		sprintToggled = not sprintToggled
+		setSprint(sprintToggled)
+		tw(sprintCG, {BackgroundTransparency = sprintToggled and 0.35 or 0}, 0.15)
+	end)
+end
+skillBtn.Activated:Connect(function() rSkill:FireServer() end)
+
+-- tracker de missões
+local tracker = mk("Frame", {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 66), Size = UDim2.fromOffset(250, 10), BackgroundColor3 = T.panel,
+	BackgroundTransparency = 0.15, AutomaticSize = Enum.AutomaticSize.Y, Visible = false}, root)
+round(tracker, 12) stroke(tracker, T.accent, 1.5, 0.5)
+mk("UIPadding", {PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)}, tracker)
+mk("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, tracker)
+local trackerHead = label(tracker, "MISSÕES", 12, T.accent2, Enum.Font.GothamBlack, {Size = UDim2.new(1, 0, 0, 14), LayoutOrder = 0})
+
+local function refreshTracker()
+	for _, c in ipairs(tracker:GetChildren()) do
+		if c:IsA("Frame") then c:Destroy() end
+	end
+	local n = 0
+	for id, prog in pairs(state.active) do
+		local q = Config.QuestsById[id]
+		if q then
+			n += 1
+			local f = mk("Frame", {Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, LayoutOrder = n}, tracker)
+			label(f, q.name, 13, T.text, Enum.Font.GothamBold, {Size = UDim2.new(1, -50, 0, 16), TextWrapped = false})
+			label(f, prog >= q.count and "PRONTA" or (prog .. "/" .. q.count), 13, prog >= q.count and T.good or T.gold, Enum.Font.GothamBold,
+				{AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(60, 16), TextXAlignment = Enum.TextXAlignment.Right})
+			local bg = mk("Frame", {Position = UDim2.fromOffset(0, 22), Size = UDim2.new(1, 0, 0, 10), BackgroundColor3 = T.bg}, f)
+			round(bg, 5)
+			local fl = mk("Frame", {Size = UDim2.fromScale(math.clamp(prog / q.count, 0, 1), 1), BackgroundColor3 = prog >= q.count and T.good or T.accent2}, bg)
+			round(fl, 5)
+		end
+	end
+	tracker.Visible = n > 0
+end
+
+-- ============================== PAINÉIS =============================
+local panels = {}
+local openName = nil
+local function makePanel(name, title, w, h)
+	local f = mk("CanvasGroup", {Name = name, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 16), Size = UDim2.fromOffset(w, h),
+		BackgroundColor3 = T.panel, Visible = false, GroupTransparency = 1}, root)
+	round(f, 14) stroke(f, T.accent, 2, 0.35)
+	local head = mk("Frame", {Size = UDim2.new(1, 0, 0, 44), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0}, f)
+	grad(head, T.panel2, T.panel, 0)
+	label(head, title, 18, T.text, Enum.Font.GothamBlack, {Position = UDim2.fromOffset(16, 0), Size = UDim2.new(1, -70, 1, 0)})
+	local close = mk("TextButton", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(30, 30), BackgroundColor3 = T.bad,
+		Text = "X", Font = Enum.Font.GothamBlack, TextSize = 14, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = true}, head)
+	round(close, 8)
+	local content = mk("Frame", {Position = UDim2.fromOffset(0, 44), Size = UDim2.new(1, 0, 1, -44), BackgroundTransparency = 1}, f)
+	local p = {frame = f, content = content, refresh = function() end, token = 0}
+	panels[name] = p
+	close.Activated:Connect(function() if openName == name then openName = nil end p.token += 1 local tk = p.token tw(f, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0.5, 16)}, 0.18) task.delay(0.2, function() if p.token == tk then f.Visible = false end end) end)
+	return p
+end
+
+local function closePanel(name)
+	local p = panels[name]
+	if not p then return end
+	p.token += 1
+	local tk = p.token
+	tw(p.frame, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0.5, 16)}, 0.18)
+	task.delay(0.2, function() if p.token == tk then p.frame.Visible = false end end)
+end
+local function openPanel(name)
+	if openName == name then
+		closePanel(name)
+		openName = nil
+		return
+	end
+	if openName then closePanel(openName) end
+	openName = name
+	local p = panels[name]
+	p.token += 1
+	p.refresh()
+	p.frame.Visible = true
+	p.frame.Position = UDim2.new(0.5, 0, 0.5, 16)
+	tw(p.frame, {GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5)}, 0.25, Enum.EasingStyle.Back)
+end
+
+topButton("LOJA", "shop", 1).Activated:Connect(function() openPanel("shop") end)
+topButton("QUESTS", "quests", 2).Activated:Connect(function() openPanel("quests") end)
+topButton("INVENTÁRIO", "inv", 3).Activated:Connect(function() openPanel("inv") end)
+topButton("STATUS", "status", 4).Activated:Connect(function() openPanel("status") end)
+
+-- ---------------------- navegador de espadas -----------------------
+local function owned(id) return table.find(state.inv, id) ~= nil end
+
+local function makeBrowser(panel, mode)
+	local content = panel.content
+	local list = mk("ScrollingFrame", {Position = UDim2.fromOffset(8, 8), Size = UDim2.new(0, 250, 1, -16), BackgroundTransparency = 1, ScrollBarThickness = 4,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new()}, content)
+	mk("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, list)
+	local detail = mk("Frame", {Position = UDim2.fromOffset(266, 8), Size = UDim2.new(1, -274, 1, -16), BackgroundColor3 = T.bg2}, content)
+	round(detail, 12) stroke(detail, T.panel2, 1.5)
+	local sel = nil
+
+	local function render()
+		for _, c in ipairs(list:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+		for _, c in ipairs(detail:GetChildren()) do c:Destroy() end
+		local ids = {}
+		for _, s in ipairs(Config.Swords) do
+			if (mode == "shop" and s.shop) or (mode == "inv" and owned(s.id)) then table.insert(ids, s) end
+		end
+		table.sort(ids, function(a, b)
+			local ra, rb = Config.Rarities[a.rarity].order, Config.Rarities[b.rarity].order
+			if ra ~= rb then return ra < rb end
+			return a.order < b.order
+		end)
+		local found = false
+		for _, s in ipairs(ids) do if s.id == sel then found = true end end
+		if not found then sel = ids[1] and ids[1].id or nil end
+		for i, s in ipairs(ids) do
+			local rar = Config.Rarities[s.rarity]
+			local card = mk("TextButton", {Size = UDim2.new(1, -6, 0, 54), BackgroundColor3 = (s.id == sel) and T.panel2 or T.bg2, Text = "", AutoButtonColor = false, LayoutOrder = i}, list)
+			round(card, 10) stroke(card, rar.color, (s.id == sel) and 2 or 1, (s.id == sel) and 0 or 0.6)
+			mk("Frame", {Size = UDim2.new(0, 5, 1, -12), Position = UDim2.fromOffset(6, 6), BackgroundColor3 = rar.color, BorderSizePixel = 0}, card)
+			label(card, s.name, 14, rar.color, Enum.Font.GothamBold, {Position = UDim2.fromOffset(20, 6), Size = UDim2.new(1, -28, 0, 18), TextWrapped = false})
+			local sub
+			if s.id == state.equipped then sub = "EQUIPADA"
+			elseif owned(s.id) then sub = "POSSUÍDA"
+			elseif s.shop then sub = rar.label .. "  •  $ " .. fmt(s.price)
+			else sub = rar.label end
+			label(card, sub, 12, (s.id == state.equipped) and T.good or T.sub, Enum.Font.Gotham, {Position = UDim2.fromOffset(20, 28), Size = UDim2.new(1, -28, 0, 16), TextWrapped = false})
+			card.Activated:Connect(function() sel = s.id render() end)
+		end
+		local s = sel and Config.SwordsById[sel]
+		if not s then
+			label(detail, mode == "inv" and "Nenhuma espada." or "Nada à venda.", 16, T.sub, Enum.Font.GothamBold, {Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center})
+			return
+		end
+		local rar = Config.Rarities[s.rarity]
+		label(detail, s.name, 22, rar.color, Enum.Font.GothamBlack, {Position = UDim2.fromOffset(14, 10), Size = UDim2.new(1, -28, 0, 28), TextWrapped = false})
+		label(detail, rar.label:upper(), 12, rar.color, Enum.Font.GothamBold, {Position = UDim2.fromOffset(14, 38), Size = UDim2.new(1, -28, 0, 16)})
+		local rows = {
+			{"Dano", s.damage, s.damage / 340, tostring(s.damage)},
+			{"Recarga", s.cooldown, (1 / s.cooldown) / 2.6, ("%.2fs"):format(s.cooldown)},
+			{"Alcance", s.range, s.range / 13, tostring(s.range)},
+			{"Crítico", s.crit, s.crit / 0.2, math.floor(s.crit * 100 + 0.5) .. "%"},
+		}
+		for i, r in ipairs(rows) do
+			local y = 62 + (i - 1) * 26
+			label(detail, r[1], 13, T.sub, Enum.Font.GothamBold, {Position = UDim2.fromOffset(14, y), Size = UDim2.fromOffset(70, 20)})
+			local bg = mk("Frame", {Position = UDim2.fromOffset(88, y + 5), Size = UDim2.new(1, -160, 0, 10), BackgroundColor3 = T.bg}, detail)
+			round(bg, 5)
+			local fl = mk("Frame", {Size = UDim2.fromScale(math.clamp(r[3], 0.04, 1), 1), BackgroundColor3 = rar.color}, bg)
+			round(fl, 5)
+			label(detail, r[4], 13, T.text, Enum.Font.GothamBold, {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, y), Size = UDim2.fromOffset(56, 20), TextXAlignment = Enum.TextXAlignment.Right})
+		end
+		local sk = s.skill
+		local box = mk("Frame", {Position = UDim2.fromOffset(14, 172), Size = UDim2.new(1, -28, 0, 112), BackgroundColor3 = T.panel}, detail)
+		round(box, 10) stroke(box, sk.color, 1.5, 0.3)
+		label(box, "HABILIDADE ESPECIAL", 11, sk.color, Enum.Font.GothamBlack, {Position = UDim2.fromOffset(12, 8), Size = UDim2.new(1, -24, 0, 14)})
+		label(box, sk.name .. "   •   recarga " .. sk.cd .. "s", 15, T.text, Enum.Font.GothamBold, {Position = UDim2.fromOffset(12, 26), Size = UDim2.new(1, -24, 0, 20), TextWrapped = false})
+		label(box, sk.desc, 13, T.sub, Enum.Font.Gotham, {Position = UDim2.fromOffset(12, 50), Size = UDim2.new(1, -24, 0, 56), TextYAlignment = Enum.TextYAlignment.Top})
+		local btn = mk("TextButton", {AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -12), Size = UDim2.new(1, -28, 0, 44), Font = Enum.Font.GothamBlack,
+			TextSize = 16, TextColor3 = Color3.new(1, 1, 1), BackgroundColor3 = T.accent, AutoButtonColor = true}, detail)
+		round(btn, 10)
+		if s.id == state.equipped then
+			btn.Text, btn.BackgroundColor3, btn.AutoButtonColor = "EQUIPADA", T.panel2, false
+		elseif owned(s.id) then
+			btn.Text, btn.BackgroundColor3 = "EQUIPAR", T.good
+			btn.Activated:Connect(function() rEquip:FireServer(s.id) end)
+		elseif s.shop then
+			if state.coins >= s.price then
+				btn.Text, btn.BackgroundColor3 = "COMPRAR  —  $ " .. fmt(s.price), T.accent
+				btn.Activated:Connect(function() rBuy:FireServer(s.id) end)
+			else
+				btn.Text, btn.BackgroundColor3, btn.AutoButtonColor = "MOEDAS INSUFICIENTES  ($ " .. fmt(s.price) .. ")", T.bad, false
+				btn.TextSize = 14
+			end
+		else
+			btn.Text, btn.BackgroundColor3, btn.AutoButtonColor = "NÃO DISPONÍVEL", T.panel2, false
+		end
+	end
+	panel.refresh = render
+	return render
+end
+
+local shopPanel = makePanel("shop", "LOJA DO FERREIRO", 720, 440)
+makeBrowser(shopPanel, "shop")
+local invPanel = makePanel("inv", "INVENTÁRIO DE ESPADAS", 720, 440)
+makeBrowser(invPanel, "inv")
+
+-- ------------------------------ quests -----------------------------
+local questPanel = makePanel("quests", "MISSÕES", 620, 420)
+do
+	local scroll = mk("ScrollingFrame", {Position = UDim2.fromOffset(10, 8), Size = UDim2.new(1, -20, 1, -16), BackgroundTransparency = 1, ScrollBarThickness = 4,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new()}, questPanel.content)
+	mk("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, scroll)
+	questPanel.refresh = function()
+		for _, c in ipairs(scroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+		local n = 0
+		for _, q in ipairs(Config.Quests) do
+			local prog = state.active[q.id]
+			if prog ~= nil then
+				n += 1
+				local card = mk("Frame", {Size = UDim2.new(1, -8, 0, 108), BackgroundColor3 = T.bg2, LayoutOrder = n}, scroll)
+				round(card, 12) stroke(card, T.accent, 1.5, 0.4)
+				label(card, q.name, 17, T.text, Enum.Font.GothamBlack, {Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -150, 0, 22), TextWrapped = false})
+				label(card, "Entregar a: " .. q.npc, 12, T.accent2, Enum.Font.GothamBold, {Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -150, 0, 16)})
+				label(card, "Objetivo: " .. q.desc, 13, T.sub, Enum.Font.Gotham, {Position = UDim2.fromOffset(14, 48), Size = UDim2.new(1, -28, 0, 34), TextYAlignment = Enum.TextYAlignment.Top})
+				local bg = mk("Frame", {Position = UDim2.fromOffset(14, 86), Size = UDim2.new(1, -200, 0, 12), BackgroundColor3 = T.bg}, card)
+				round(bg, 6)
+				local fl = mk("Frame", {Size = UDim2.fromScale(math.clamp(prog / q.count, 0, 1), 1), BackgroundColor3 = prog >= q.count and T.good or T.accent2}, bg)
+				round(fl, 6)
+				label(card, prog .. "/" .. q.count, 13, T.text, Enum.Font.GothamBold, {Position = UDim2.new(1, -180, 0, 82), Size = UDim2.fromOffset(60, 20)})
+				label(card, "Recompensa: $" .. fmt(q.coins) .. " + " .. fmt(q.xp) .. " XP", 12, T.gold, Enum.Font.GothamBold, {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 10), Size = UDim2.fromOffset(150, 18), TextXAlignment = Enum.TextXAlignment.Right})
+				local ab = mk("TextButton", {AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -8), Size = UDim2.fromOffset(88, 24), BackgroundColor3 = T.panel2,
+					Text = "Abandonar", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = T.sub}, card)
+				round(ab, 8)
+				ab.Activated:Connect(function() rAbandon:FireServer(q.id) end)
+			end
+		end
+		if n == 0 then
+			local l = label(scroll, "Nenhuma missão ativa.\nFale com os NPCs (tecla E / toque no botão) para aceitar missões. Elas dão moedas extras e XP.", 15, T.sub, Enum.Font.GothamBold,
+				{Size = UDim2.new(1, 0, 0, 80), TextXAlignment = Enum.TextXAlignment.Center})
+		end
+		local doneN = 0
+		for _ in pairs(state.done) do doneN += 1 end
+		label(scroll, "Missões concluídas: " .. doneN .. " / " .. #Config.Quests, 13, T.sub, Enum.Font.GothamBold, {Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 999})
+	end
+end
+
+-- ------------------------------ status -----------------------------
+local statusPanel = makePanel("status", "STATUS DO AVENTUREIRO", 620, 400)
+do
+	local grid = mk("Frame", {Position = UDim2.fromOffset(14, 12), Size = UDim2.new(1, -28, 1, -24), BackgroundTransparency = 1}, statusPanel.content)
+	mk("UIGridLayout", {CellSize = UDim2.new(0.5, -6, 0, 52), CellPadding = UDim2.fromOffset(10, 10), SortOrder = Enum.SortOrder.LayoutOrder}, grid)
+	statusPanel.refresh = function()
+		for _, c in ipairs(grid:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+		local def = Config.SwordsById[state.equipped] or Config.SwordsById.wood
+		local need = state.need > 0 and state.need or 1
+		local items = {
+			{"Nível", tostring(state.level) .. (state.level >= Config.MaxLevel and " (MÁX)" or "")},
+			{"XP", state.need > 0 and (fmt(state.xp) .. " / " .. fmt(need)) or "—"},
+			{"Moedas", "$ " .. fmt(state.coins)},
+			{"Vida máxima", tostring(Config.MaxHealth(state.level))},
+			{"Espada equipada", def.name},
+			{"Dano por golpe (aprox.)", tostring(math.floor(def.damage * Config.DamageScale(state.level)))},
+			{"Habilidade", def.skill.name},
+			{"Slimes derrotados", fmt(state.kills)},
+			{"Dano total causado", fmt(state.dmg)},
+			{"Salvamento", state.canSave and "Ativo" or "DESATIVADO (falha ao carregar)"},
+		}
+		for i, it in ipairs(items) do
+			local c = mk("Frame", {BackgroundColor3 = T.bg2, LayoutOrder = i}, grid)
+			round(c, 10) stroke(c, T.panel2, 1.5)
+			label(c, it[1], 12, T.sub, Enum.Font.GothamBold, {Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -24, 0, 14)})
+			label(c, it[2], 16, T.text, Enum.Font.GothamBlack, {Position = UDim2.fromOffset(12, 24), Size = UDim2.new(1, -24, 0, 22), TextWrapped = false})
+		end
+	end
+end
+
+-- ------------------------------ admin ------------------------------
+local adminBuilt = false
+local function adminFire(cmd, args) rAdmin:FireServer(cmd, args) end
+local function buildAdmin()
+	if adminBuilt then return end
+	adminBuilt = true
+	local panel = makePanel("admin", "PAINEL ADMIN", 700, 440)
+	local scroll = mk("ScrollingFrame", {Position = UDim2.fromOffset(10, 8), Size = UDim2.new(1, -20, 1, -16), BackgroundTransparency = 1, ScrollBarThickness = 4,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new()}, panel.content)
+	mk("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, scroll)
+	local order = 0
+	local function row(h)
+		order += 1
+		local f = mk("Frame", {Size = UDim2.new(1, -8, 0, h or 38), BackgroundTransparency = 1, LayoutOrder = order}, scroll)
+		mk("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center}, f)
+		return f
+	end
+	local function box(parent, ph, w)
+		local b = mk("TextBox", {Size = UDim2.fromOffset(w or 150, 34), BackgroundColor3 = T.bg2, PlaceholderText = ph, Text = "", Font = Enum.Font.Gotham, TextSize = 13,
+			TextColor3 = T.text, PlaceholderColor3 = T.sub, ClearTextOnFocus = false}, parent)
+		round(b, 8) stroke(b, T.panel2, 1.5)
+		return b
+	end
+	local function btn(parent, text, fn, color, w)
+		local b = mk("TextButton", {Size = UDim2.fromOffset(w or 118, 34), BackgroundColor3 = color or T.accent, Text = text, Font = Enum.Font.GothamBold, TextSize = 12,
+			TextColor3 = Color3.new(1, 1, 1), TextWrapped = true}, parent)
+		round(b, 8)
+		b.Activated:Connect(fn)
+		return b
+	end
+	local function title(text)
+		order += 1
+		label(scroll, text, 13, T.accent2, Enum.Font.GothamBlack, {Size = UDim2.new(1, -8, 0, 18), LayoutOrder = order})
+	end
+
+	title("ALVO (vazio = você, 'todos' = todos os jogadores)")
+	local r0 = row()
+	local target = box(r0, "Nome do jogador", 220)
+	local value = box(r0, "Valor (número)", 140)
+	local function T_() return target.Text end
+	local function V_() return tonumber(value.Text) end
+
+	title("JOGADOR")
+	local r1 = row()
+	btn(r1, "Curar", function() adminFire("heal", {target = T_()}) end, T.good)
+	btn(r1, "Velocidade ×valor", function() adminFire("speed", {target = T_(), value = V_() or 1}) end)
+	btn(r1, "Resetar velocidade", function() adminFire("speed", {target = T_(), value = 1}) end, T.panel2)
+	btn(r1, "Nível = valor", function() adminFire("level", {target = T_(), value = V_() or 1}) end)
+	local r2 = row()
+	btn(r2, "Moedas + valor", function() adminFire("coins", {target = T_(), value = V_() or 0, mode = "add"}) end, T.gold)
+	btn(r2, "Moedas = valor", function() adminFire("coins", {target = T_(), value = V_() or 0, mode = "set"}) end, T.gold)
+	btn(r2, "Ir até jogador", function() adminFire("tp_to", {target = T_()}) end, T.accent2)
+	btn(r2, "Trazer jogador", function() adminFire("bring", {target = T_()}) end, T.accent2)
+
+	title("ESPADAS")
+	local swordIdx = 1
+	local r3 = row()
+	local swordBtn
+	swordBtn = btn(r3, Config.Swords[1].name, function()
+		swordIdx = swordIdx % #Config.Swords + 1
+		swordBtn.Text = Config.Swords[swordIdx].name
+	end, T.panel2, 200)
+	btn(r3, "Dar espada", function() adminFire("give_sword", {target = T_(), sword = Config.Swords[swordIdx].id}) end, T.good)
+	btn(r3, "Remover espada", function() adminFire("remove_sword", {target = T_(), sword = Config.Swords[swordIdx].id}) end, T.bad)
+
+	title("SLIMES")
+	local kinds = {}
+	for k in pairs(Config.SlimeKinds) do table.insert(kinds, k) end
+	table.sort(kinds)
+	local kindIdx = 1
+	local r4 = row()
+	local kindBtn
+	kindBtn = btn(r4, kinds[1], function()
+		kindIdx = kindIdx % #kinds + 1
+		kindBtn.Text = kinds[kindIdx]
+	end, T.panel2, 160)
+	btn(r4, "Spawnar (nível = valor)", function() adminFire("slime_spawn", {kind = kinds[kindIdx], value = V_() or 1}) end, T.accent, 170)
+	local r5 = row()
+	btn(r5, "Matar todos", function() adminFire("slimes_kill", {}) end, T.bad)
+	btn(r5, "Respawnar todos", function() adminFire("slimes_respawn", {}) end, T.good)
+	btn(r5, "Ligar/Desligar respawn", function() adminFire("slimes_toggle", {}) end, T.warn, 150)
+	btn(r5, "Contar slimes", function() adminFire("slimes_count", {}) end, T.panel2)
+
+	title("TELEPORTE (pontos de interesse)")
+	order += 1
+	local poiBox = mk("Frame", {Size = UDim2.new(1, -8, 0, 10), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = order}, scroll)
+	mk("UIGridLayout", {CellSize = UDim2.fromOffset(200, 32), CellPadding = UDim2.fromOffset(6, 6)}, poiBox)
+	local mig = Workspace:FindFirstChild("MIG_WORLD")
+	local pf = mig and mig:FindFirstChild("PontosDeInteresse")
+	if pf then
+		local names = {}
+		for _, m in ipairs(pf:GetChildren()) do
+			local n = m.Name:match("^POI_(.+)$")
+			if n then table.insert(names, n) end
+		end
+		table.sort(names)
+		for _, n in ipairs(names) do
+			btn(poiBox, n, function() adminFire("tp_poi", {name = n}) end, T.panel2, 200).TextSize = 11
+		end
+	end
+end
+
+local adminTopBtn = nil
+local function refreshAdminButton()
+	if state.admin and not adminTopBtn then
+		buildAdmin()
+		adminTopBtn = topButton("ADMIN", "admin", 5)
+		adminTopBtn.Activated:Connect(function() openPanel("admin") end)
+	end
+end
+
+-- ============================== DIÁLOGO =============================
+local dlg = mk("CanvasGroup", {AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -112), Size = UDim2.fromOffset(700, 190), BackgroundColor3 = T.panel,
+	GroupTransparency = 1, Visible = false}, root)
+round(dlg, 14) stroke(dlg, T.accent, 2, 0.3)
+local dlgName = label(dlg, "", 18, T.accent2, Enum.Font.GothamBlack, {Position = UDim2.fromOffset(18, 10), Size = UDim2.new(1, -36, 0, 22), TextWrapped = false})
+local dlgText = label(dlg, "", 16, T.text, Enum.Font.Gotham, {Position = UDim2.fromOffset(18, 36), Size = UDim2.new(1, -36, 0, 54), TextYAlignment = Enum.TextYAlignment.Top})
+local dlgOptions = mk("ScrollingFrame", {Position = UDim2.fromOffset(14, 94), Size = UDim2.new(1, -28, 1, -102), BackgroundTransparency = 1, ScrollBarThickness = 3,
+	AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new()}, dlg)
+mk("UIListLayout", {Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder}, dlgOptions)
+local dlgToken = 0
+local dlgNpc, dlgPos = nil, nil
+
+local function closeDialogue()
+	dlgNpc, dlgPos = nil, nil
+	dlgToken += 1
+	local tk = dlgToken
+	tw(dlg, {GroupTransparency = 1}, 0.2)
+	task.delay(0.22, function() if dlgToken == tk then dlg.Visible = false end end)
+end
+
+rDialogue.OnClientEvent:Connect(function(payload)
+	if typeof(payload) ~= "table" then return end
+	dlgToken += 1
+	local tk = dlgToken
+	dlgNpc, dlgPos = payload.npc, payload.pos
+	dlg.Visible = true
+	tw(dlg, {GroupTransparency = 0}, 0.2)
+	dlgName.Text = payload.npc
+	dlgText.Text = payload.text
+	dlgText.MaxVisibleGraphemes = 0
+	for _, c in ipairs(dlgOptions:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+	for i, o in ipairs(payload.options) do
+		local b = mk("TextButton", {Size = UDim2.new(1, -6, 0, 32), BackgroundColor3 = T.panel2, Text = "  " .. o.label, Font = Enum.Font.GothamBold, TextSize = 14,
+			TextColor3 = T.text, TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = true, LayoutOrder = i}, dlgOptions)
+		round(b, 8) stroke(b, T.accent, 1, 0.6)
+		b.Activated:Connect(function()
+			rChoice:FireServer(payload.npc, o.id)
+			if o.close then closeDialogue() end
+		end)
+	end
+	task.spawn(function()
+		local n = #dlgText.Text
+		for i = 1, n do
+			if dlgToken ~= tk then return end
+			dlgText.MaxVisibleGraphemes = i
+			task.wait(0.012)
+		end
+		dlgText.MaxVisibleGraphemes = -1
+	end)
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		if dlgNpc and dlgPos then
+			local char = player.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if not hrp or (hrp.Position - dlgPos).Magnitude > 28 then closeDialogue() end
+		end
+	end
+end)
+
+rOpenShop.OnClientEvent:Connect(function()
+	if openName ~= "shop" then openPanel("shop") end
+end)
+
+-- ============================== ESTADO ==============================
+rState.OnClientEvent:Connect(function(st)
+	if typeof(st) ~= "table" then return end
+	state = st
+	lvlText.Text = tostring(st.level)
+	coinText.Text = fmt(st.coins)
+	refreshAdminButton()
+	refreshTracker()
+	local p = openName and panels[openName]
+	if p then p.refresh() end
+end)
+
+rStamina.OnClientEvent:Connect(function(v, flag, remain)
+	stam.value, stam.flag, stam.remain = v, flag, remain
+	if flag == 2 and sprintToggled then
+		sprintToggled = false
+		lastSprintSent = false
+		if sprintCG then tw(sprintCG, {BackgroundTransparency = 0}, 0.15) end
+	end
+end)
+
+-- ============================== INPUT ===============================
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+		setSprint(true)
+	elseif input.KeyCode == Enum.KeyCode.Q then
+		rSkill:FireServer()
+	elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+		attackHeld = true
+	end
+end)
+UIS.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+		setSprint(false)
+	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and not isTouch then
+		attackHeld = false
+	end
+end)
+
+local nextAttack = 0
+RunService.RenderStepped:Connect(function(dt)
+	local now = os.clock()
+	if attackHeld and now >= nextAttack and not UIS:GetFocusedTextBox() then
+		nextAttack = now + 0.1
+		rAttack:FireServer()
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local a = math.min(1, dt * 10)
+	-- vida
+	local hpFrac, hpText = 0, "HP"
+	if hum then
+		hpFrac = math.clamp(hum.Health / math.max(1, hum.MaxHealth), 0, 1)
+		hpText = ("HP  %d / %d"):format(math.ceil(hum.Health), math.ceil(hum.MaxHealth))
+	end
+	hpBar.disp += (hpFrac - hpBar.disp) * a
+	hpBar.fill.Size = UDim2.fromScale(math.max(hpBar.disp, 0.001), 1)
+	hpBar.txt.Text = hpText
+	-- xp
+	local xpFrac = state.need > 0 and math.clamp(state.xp / state.need, 0, 1) or 1
+	xpBar.disp += (xpFrac - xpBar.disp) * a
+	xpBar.fill.Size = UDim2.fromScale(math.max(xpBar.disp, 0.001), 1)
+	xpBar.txt.Text = state.need > 0 and ("XP  %s / %s"):format(fmt(state.xp), fmt(state.need)) or "XP  MÁX"
+	-- sprint
+	local sFrac = math.clamp(stam.value / 100, 0, 1)
+	spBar.disp += (sFrac - spBar.disp) * a
+	spBar.fill.Size = UDim2.fromScale(math.max(spBar.disp, 0.001), 1)
+	if stam.flag == 2 then
+		local rem = math.max(0, stam.remain - (now - (stam.recv or now)))
+		spBar.txt.Text = ("SPRINT  %d%%  (recarrega em %ds)"):format(math.floor(stam.value + 0.5), math.ceil(stam.remain))
+		spBar.grad.Color = ColorSequence.new(Color3.fromRGB(255, 80, 90), Color3.fromRGB(255, 130, 110))
+	else
+		spBar.txt.Text = ("SPRINT  %d%%"):format(math.floor(stam.value + 0.5))
+		spBar.grad.Color = ColorSequence.new(Color3.fromRGB(255, 190, 60), Color3.fromRGB(255, 235, 120))
+	end
+	-- habilidade
+	local def = Config.SwordsById[state.equipped]
+	if def then
+		local total = def.skill.cd
+		local remain = math.max(0, state.skillReady - Workspace:GetServerTimeNow())
+		skillOverlay.Size = UDim2.fromScale(1, math.clamp(remain / total, 0, 1))
+		skillTime.Text = remain > 0 and tostring(math.ceil(remain)) or ""
+		skillLbl.Text = def.skill.name:upper()
+		skillLbl.TextSize = 10
+	end
+end)
+
+-- ============================== EFEITOS =============================
+local fxFolder = mk("Folder", {Name = "MigFX"}, Workspace)
+local function fxPart(size, cf, color, shape, trans)
+	local p = mk("Part", {Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false, Material = Enum.Material.Neon,
+		Color = color, Size = size, CFrame = cf, Transparency = trans or 0.3, Massless = true}, nil)
+	if shape then p.Shape = shape end
+	p.Parent = fxFolder
+	return p
+end
+local FX = {}
+FX.ring = function(e)
+	local p = fxPart(Vector3.new(0.5, 2, 2), CFrame.new(e.p) * CFrame.Angles(0, 0, math.pi / 2), e.c, Enum.PartType.Cylinder, 0.35)
+	TweenService:Create(p, TweenInfo.new(0.5), {Size = Vector3.new(0.5, e.r * 2, e.r * 2), Transparency = 1}):Play()
+	Debris:AddItem(p, 0.6)
+end
+FX.slash = function(e)
+	local p = fxPart(Vector3.new(7 * (e.s or 1), 0.25, 0.9), e.cf * CFrame.Angles(0, 0, math.rad(70)), e.c, nil, 0.2)
+	TweenService:Create(p, TweenInfo.new(0.22), {CFrame = e.cf * CFrame.Angles(0, 0, math.rad(-70)), Transparency = 1}):Play()
+	Debris:AddItem(p, 0.3)
+end
+FX.beam = function(e)
+	local p = fxPart(Vector3.new(e.h, e.r * 2, e.r * 2), CFrame.new(e.p + Vector3.new(0, e.h / 2, 0)) * CFrame.Angles(0, 0, math.pi / 2), e.c, Enum.PartType.Cylinder, 0.3)
+	TweenService:Create(p, TweenInfo.new(0.6), {Transparency = 1, Size = Vector3.new(e.h, e.r * 0.4, e.r * 0.4)}):Play()
+	Debris:AddItem(p, 0.7)
+end
+FX.bolt = function(e)
+	local a, b = e.a, e.b
+	local prev = a
+	for i = 1, 6 do
+		local pt = a:Lerp(b, i / 6)
+		if i < 6 then pt += Vector3.new(math.random(-10, 10) / 10, math.random(-10, 10) / 10, math.random(-10, 10) / 10) * 1.5 end
+		local len = (pt - prev).Magnitude
+		if len > 0.05 then
+			local p = fxPart(Vector3.new(0.4, 0.4, len), CFrame.lookAt((prev + pt) / 2, pt), e.c, nil, 0)
+			TweenService:Create(p, TweenInfo.new(0.3), {Transparency = 1}):Play()
+			Debris:AddItem(p, 0.35)
+		end
+		prev = pt
+	end
+end
+FX.burst = function(e)
+	for _ = 1, math.min(e.n or 12, 30) do
+		local p = fxPart(Vector3.new(0.6, 0.6, 0.6), CFrame.new(e.p), e.c, Enum.PartType.Ball, 0.1)
+		local dir = Vector3.new(math.random(-10, 10), math.random(2, 12), math.random(-10, 10)).Unit * math.random(4, 10)
+		TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Quad), {Position = e.p + dir, Transparency = 1, Size = Vector3.new(0.1, 0.1, 0.1)}):Play()
+		Debris:AddItem(p, 0.6)
+	end
+end
+FX.dash = function(e)
+	local len = (e.b - e.a).Magnitude
+	if len < 0.5 then return end
+	local p = fxPart(Vector3.new(2.5, 2.5, len), CFrame.lookAt((e.a + e.b) / 2, e.b), e.c, nil, 0.4)
+	TweenService:Create(p, TweenInfo.new(0.35), {Transparency = 1, Size = Vector3.new(0.2, 0.2, len)}):Play()
+	Debris:AddItem(p, 0.4)
+end
+FX.wave = function(e)
+	local len = (e.b - e.a).Magnitude
+	local p = fxPart(Vector3.new(e.w, 0.6, len), CFrame.lookAt((e.a + e.b) / 2, e.b), e.c, nil, 0.3)
+	TweenService:Create(p, TweenInfo.new(0.5), {Transparency = 1}):Play()
+	Debris:AddItem(p, 0.6)
+end
+FX.meteor = function(e)
+	local p = fxPart(Vector3.new(3, 3, 3), CFrame.new(e.p + Vector3.new(0, 45, 0)), e.c, Enum.PartType.Ball, 0)
+	TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Position = e.p}):Play()
+	Debris:AddItem(p, 0.55)
+	task.delay(0.5, function()
+		FX.ring({p = e.p - Vector3.new(0, 1.5, 0), r = 10, c = e.c})
+		FX.burst({p = e.p, c = e.c, n = 16})
+	end)
+end
+FX.dmg = function(e)
+	local a = mk("Part", {Anchored = true, CanCollide = false, CanQuery = false, Transparency = 1, Size = Vector3.new(1, 1, 1), CFrame = CFrame.new(e.p)}, fxFolder)
+	local bb = mk("BillboardGui", {Size = UDim2.fromOffset(120, 40), AlwaysOnTop = true, StudsOffset = Vector3.new(math.random(-10, 10) / 10, 0, 0)}, a)
+	local t = mk("TextLabel", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Font = Enum.Font.GothamBlack, TextSize = e.c and 30 or 22,
+		Text = tostring(e.a) .. (e.c and "!" or ""), TextColor3 = e.c and Color3.fromRGB(255, 214, 70) or Color3.new(1, 1, 1), TextStrokeTransparency = 0.3}, bb)
+	TweenService:Create(bb, TweenInfo.new(0.8), {StudsOffset = bb.StudsOffset + Vector3.new(0, 4, 0)}):Play()
+	TweenService:Create(t, TweenInfo.new(0.8), {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+	Debris:AddItem(a, 0.9)
+end
+FX.levelup = function(e)
+	FX.beam({p = e.p - Vector3.new(0, 3, 0), h = 60, r = 3, c = T.gold})
+	FX.ring({p = e.p - Vector3.new(0, 2.8, 0), r = 16, c = T.gold})
+	FX.burst({p = e.p, c = T.gold, n = 30})
+end
+local hurt = mk("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(255, 30, 50), BackgroundTransparency = 1, ZIndex = 0, Active = false}, root)
+FX.hurt = function()
+	hurt.BackgroundTransparency = 0.78
+	tw(hurt, {BackgroundTransparency = 1}, 0.4)
+end
+rFX.OnClientEvent:Connect(function(e)
+	if typeof(e) ~= "table" then return end
+	local f = FX[e.k]
+	if f then pcall(f, e) end
+end)
+
+local rReady = remote("Ready")
+rReady:FireServer()
+task.delay(4, function() rReady:FireServer() end)
+
+print("[MigRPG] Cliente do RPG iniciado.")
+]=====]
+
+-- =====================================================================
+-- LIMPEZA DA INSTALAÇÃO ANTERIOR (somente RPG; mapa intocado)
+-- =====================================================================
+local oldRPG = RS:FindFirstChild("MigRPG")
+if oldRPG then oldRPG:Destroy() end
+local oldSrv = SSS:FindFirstChild("MigRPG_Server")
+if oldSrv then oldSrv:Destroy() end
+local sps = StarterPlayer:WaitForChild("StarterPlayerScripts")
+local oldCli = sps:FindFirstChild("MigRPG_Client")
+if oldCli then oldCli:Destroy() end
+
+-- =====================================================================
+-- CONFIG + REMOTES
+-- =====================================================================
+local rpg = Instance.new("Folder")
+rpg.Name = "MigRPG"
+rpg.Parent = RS
+
+local cfg = Instance.new("ModuleScript")
+cfg.Name = "Config"
+cfg.Source = CONFIG_SRC
+cfg.Parent = rpg
+
+local remotes = Instance.new("Folder")
+remotes.Name = "Remotes"
+remotes.Parent = rpg
+for _, n in ipairs({"State", "Notify", "Dialogue", "DialogChoice", "OpenShop", "Attack", "Skill", "Equip", "Buy", "Sprint", "Stamina", "FX", "AdminCmd", "QuestAbandon", "Ready"}) do
+	local r = Instance.new("RemoteEvent")
+	r.Name = n
+	r.Parent = remotes
+end
+
+-- =====================================================================
+-- NPCs: CORPOS + PROXIMITYPROMPT NOS MODELOS EXISTENTES
+-- =====================================================================
+local STYLES = {
+	["Guia da Ilha"] = {C3(70, 160, 200), C3(60, 60, 80), "cap", C3(60, 120, 200)},
+	["Marinheiro"] = {C3(240, 240, 240), C3(40, 60, 110), "cap", C3(30, 50, 100)},
+	["Mestre da Guilda"] = {C3(60, 98, 156), C3(46, 46, 60), "crown", C3(240, 200, 70)},
+	["Ferreiro de Espadas"] = {C3(110, 70, 50), C3(50, 40, 36), "band", C3(180, 60, 50), "hammer"},
+	["Ferreiro"] = {C3(90, 60, 46), C3(50, 40, 36), "band", C3(70, 70, 80), "hammer"},
+	["Alquimista"] = {C3(80, 150, 90), C3(50, 70, 50), "wizard", C3(60, 120, 70)},
+	["Taverneiro"] = {C3(230, 220, 200), C3(110, 80, 50), nil, nil, "mug"},
+	["Sacerdotisa"] = {C3(235, 230, 250), C3(190, 170, 220), "wizard", C3(150, 100, 200), "staff"},
+	["Bibliotecario"] = {C3(120, 90, 160), C3(60, 50, 80), "cap", C3(90, 70, 130)},
+	["Cavaleiro"] = {C3(150, 150, 165), C3(80, 80, 95), "helmet", C3(170, 170, 185), "spear"},
+	["Guia da Vila"] = {C3(230, 190, 90), C3(80, 70, 60), "cap", C3(200, 90, 60)},
+	["Mercador"] = {C3(190, 100, 60), C3(70, 50, 40), "cap", C3(220, 180, 70)},
+	["Guarda do Portao Sul"] = {C3(80, 100, 150), C3(60, 60, 70), "helmet", C3(150, 155, 170), "spear"},
+	["Guarda do Portao Norte"] = {C3(80, 100, 150), C3(60, 60, 70), "helmet", C3(150, 155, 170), "spear"},
+	["Treinador de Combate"] = {C3(200, 70, 60), C3(50, 50, 60), "band", C3(255, 255, 255)},
+	["Explorador Veterano"] = {C3(90, 120, 70), C3(80, 64, 44), "cap", C3(100, 80, 50)},
+	["Cozinheira do Acampamento"] = {C3(240, 240, 240), C3(90, 70, 60), "cap", C3(250, 250, 250)},
+	["Mineiro"] = {C3(130, 110, 90), C3(70, 60, 50), "helmet", C3(230, 190, 60)},
+	["Pescador"] = {C3(70, 120, 150), C3(80, 70, 50), "cap", C3(200, 180, 110)},
+	["Bruxa do Pantano"] = {C3(100, 60, 140), C3(50, 40, 70), "wizard", C3(80, 40, 120), "staff"},
+	["Cacador de Sombras"] = {C3(50, 40, 70), C3(30, 30, 40), "helmet", C3(60, 50, 80)},
+}
+local DEFAULT_STYLE = {C3(150, 150, 170), C3(70, 70, 90), "cap", C3(120, 120, 140)}
+local SKIN = C3(236, 190, 150)
+
+local function npcPart(parent, name, size, cf, color, mat, shape, collide)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.CFrame = cf
+	p.Color = color
+	p.Material = mat or Enum.Material.SmoothPlastic
+	p.Anchored = true
+	p.CanCollide = collide or false
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	if shape then p.Shape = shape end
+	p.Parent = parent
+	return p
+end
+
+local function buildNpc(model)
+	local marker = model:FindFirstChild("PontoNPC")
+	if not marker then return false end
+	local npcName = marker:GetAttribute("NPC")
+	if not npcName then return false end
+	local role = marker:GetAttribute("Funcao") or ""
+	local old = model:FindFirstChild("Corpo")
+	if old then old:Destroy() end
+
+	local style = STYLES[npcName] or DEFAULT_STYLE
+	local feet = marker.Position - V3(0, 3, 0) + V3(0, 0.52, 0)
+	local lookTarget = V3(0, feet.Y, 0)
+	if (V3(feet.X, 0, feet.Z)).Magnitude < 3 then lookTarget = V3(0, feet.Y, 40) end
+	local base = CFrame.lookAt(feet, lookTarget)
+
+	local body = Instance.new("Model")
+	body.Name = "Corpo"
+	body.Parent = model
+
+	local function at(off) return base * CF(off) end
+	for _, sx in ipairs({-0.5, 0.5}) do
+		npcPart(body, "Perna", V3(0.95, 2, 0.95), at(V3(sx, 1, 0)), style[2], nil, nil, true)
+	end
+	local torso = npcPart(body, "Torso", V3(2, 2, 1), at(V3(0, 3, 0)), style[1], nil, nil, true)
+	for _, sx in ipairs({-1.45, 1.45}) do
+		npcPart(body, "Braco", V3(0.9, 2, 0.9), at(V3(sx, 3, 0)), style[1])
+		npcPart(body, "Mao", V3(0.7, 0.7, 0.7), at(V3(sx, 1.85, 0)), SKIN, nil, Enum.PartType.Ball)
+	end
+	local head = npcPart(body, "Cabeca", V3(1.6, 1.6, 1.6), at(V3(0, 4.9, 0)), SKIN, nil, Enum.PartType.Ball)
+	for _, sx in ipairs({-0.35, 0.35}) do
+		npcPart(body, "Olho", V3(0.2, 0.26, 0.1), at(V3(sx, 5.0, -0.76)), C3(20, 20, 30))
+	end
+	npcPart(body, "Boca", V3(0.5, 0.1, 0.1), at(V3(0, 4.62, -0.78)), C3(150, 70, 70))
+
+	local hat, hc = style[3], style[4]
+	if hat == "cap" then
+		npcPart(body, "Chapeu", V3(1.7, 0.7, 1.7), at(V3(0, 5.7, 0)), hc, nil, Enum.PartType.Ball)
+		npcPart(body, "Aba", V3(1.3, 0.15, 0.8), at(V3(0, 5.55, -0.95)), hc)
+	elseif hat == "crown" then
+		npcPart(body, "Coroa", V3(1.1, 0.5, 1.1), at(V3(0, 5.85, 0)), hc, Enum.Material.Metal)
+		for _, sx in ipairs({-0.45, 0, 0.45}) do npcPart(body, "Ponta", V3(0.25, 0.4, 0.25), at(V3(sx, 6.3, 0)), hc, Enum.Material.Neon) end
+	elseif hat == "band" then
+		npcPart(body, "Bandana", V3(1.7, 0.3, 1.7), at(V3(0, 5.45, 0)), hc, nil, Enum.PartType.Cylinder)
+	elseif hat == "wizard" then
+		npcPart(body, "Aba", V3(0.15, 2.4, 2.4), at(V3(0, 5.65, 0)) * CFrame.Angles(0, 0, math.pi / 2), hc, nil, Enum.PartType.Cylinder)
+		for i = 0, 3 do
+			npcPart(body, "Cone", V3(0.6, 1.6 - i * 0.35, 1.6 - i * 0.35), at(V3(0, 6.0 + i * 0.6, 0)) * CFrame.Angles(0, 0, math.pi / 2), hc, nil, Enum.PartType.Cylinder)
+		end
+	elseif hat == "helmet" then
+		npcPart(body, "Capacete", V3(1.9, 1.3, 1.9), at(V3(0, 5.55, 0)), hc, Enum.Material.Metal, Enum.PartType.Ball)
+	end
+
+	local prop = style[5]
+	if prop == "hammer" then
+		npcPart(body, "Cabo", V3(0.25, 2.6, 0.25), at(V3(1.45, 2.6, -0.9)) * CFrame.Angles(math.rad(-30), 0, 0), C3(110, 78, 50), Enum.Material.Wood)
+		npcPart(body, "Martelo", V3(0.9, 0.9, 1.6), at(V3(1.45, 3.6, -1.6)), C3(90, 90, 100), Enum.Material.Metal)
+	elseif prop == "staff" then
+		npcPart(body, "Cajado", V3(0.25, 6.2, 0.25), at(V3(1.7, 3.1, -0.4)), C3(110, 78, 50), Enum.Material.Wood)
+		local orb = npcPart(body, "Orbe", V3(0.9, 0.9, 0.9), at(V3(1.7, 6.4, -0.4)), hc or C3(190, 130, 255), Enum.Material.Neon, Enum.PartType.Ball)
+		local l = Instance.new("PointLight")
+		l.Color = orb.Color
+		l.Range = 12
+		l.Brightness = 1.4
+		l.Parent = orb
+	elseif prop == "spear" then
+		npcPart(body, "Lanca", V3(0.25, 7, 0.25), at(V3(1.8, 3.5, -0.3)), C3(110, 78, 50), Enum.Material.Wood)
+		npcPart(body, "Ponta", V3(0.5, 1.2, 0.5), at(V3(1.8, 7.4, -0.3)), C3(200, 205, 215), Enum.Material.Metal)
+	elseif prop == "mug" then
+		npcPart(body, "Caneca", V3(0.7, 0.9, 0.7), at(V3(1.45, 2.2, -0.8)), C3(180, 130, 60), Enum.Material.Wood, Enum.PartType.Cylinder)
+	end
+
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "Nome"
+	bb.Size = UDim2.fromOffset(220, 50)
+	bb.StudsOffset = V3(0, 2.6, 0)
+	bb.MaxDistance = 70
+	bb.Adornee = head
+	bb.Parent = head
+	local l1 = Instance.new("TextLabel")
+	l1.BackgroundTransparency = 1
+	l1.Size = UDim2.new(1, 0, 0, 24)
+	l1.Font = Enum.Font.GothamBlack
+	l1.TextSize = 18
+	l1.TextColor3 = Color3.new(1, 1, 1)
+	l1.TextStrokeTransparency = 0.3
+	l1.Text = npcName
+	l1.Parent = bb
+	local l2 = Instance.new("TextLabel")
+	l2.BackgroundTransparency = 1
+	l2.Position = UDim2.fromOffset(0, 24)
+	l2.Size = UDim2.new(1, 0, 0, 18)
+	l2.Font = Enum.Font.GothamBold
+	l2.TextSize = 13
+	l2.TextColor3 = Color3.fromRGB(0, 208, 255)
+	l2.TextStrokeTransparency = 0.4
+	l2.Text = role
+	l2.Parent = bb
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "MigPrompt"
+	prompt.ActionText = "Conversar"
+	prompt.ObjectText = npcName
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = 12
+	prompt.RequiresLineOfSight = false
+	prompt:SetAttribute("NPC", npcName)
+	prompt.Parent = torso
+	CollectionService:AddTag(prompt, "MigNPCPrompt")
+	model:SetAttribute("NpcId", npcName)
+	return true
+end
+
+local builtNpcs, shopNpcs = 0, 0
+for _, model in ipairs(MIG.NPCs:GetChildren()) do
+	if model:IsA("Model") and buildNpc(model) then
+		builtNpcs += 1
+		local n = model:GetAttribute("NpcId")
+		if n == "Ferreiro" or n == "Ferreiro de Espadas" then shopNpcs += 1 end
+	end
+end
+
+-- =====================================================================
+-- SCRIPTS (Source escrito AGORA, em modo Edit)
+-- =====================================================================
+local server = Instance.new("Script")
+server.Name = "MigRPG_Server"
+server.Source = SERVER_SRC
+server.Parent = SSS
+
+local client = Instance.new("LocalScript")
+client.Name = "MigRPG_Client"
+client.Source = CLIENT_SRC
+client.Parent = sps
+
+pcall(function() ChangeHistoryService:SetWaypoint("MIG RPG - instalado") end)
+
+print(("[MIG RPG] Instalado com sucesso. NPCs prontos: %d (ferreiros: %d)."):format(builtNpcs, shopNpcs))
+print("[MIG RPG] Dê Play para testar. Para DataStore: publique o jogo e ative 'Enable Studio Access to API Services'.")
+print("[MIG RPG] Admin: somente o usuário Carlosconta6 (verificado no servidor).")
